@@ -13,7 +13,7 @@ This repository contains the practical portfolio activities for MIT8103. All act
 | [`portfolio-1-database-design/`](portfolio-1-database-design/) | Complete | ER model, relational schema, normalisation, PostgreSQL DDL, seed data, integrity and PCI DSS verification. |
 | [`portfolio-2-query-optimisation/`](portfolio-2-query-optimisation/) | Pending | SQL queries, execution plans, indexing, and performance analysis. |
 | [`portfolio-3-transactions-concurrency/`](portfolio-3-transactions-concurrency/) | Complete | ACID transaction scripts, multithreaded concurrency experiments (lost update, atomic pessimistic guard, OCC, deadlock prevention, SERIALIZABLE write-skew, idempotency), P1 invariant assertions, PostgreSQL 16 evidence. |
-| [`portfolio-4-nosql/`](portfolio-4-nosql/) | Pending | NoSQL model and implementation for the same case study. |
+| [`portfolio-4-nosql/`](portfolio-4-nosql/) | Complete | NoSQL model (MongoDB document store): customer profiles, accounts with embedded cards, transactions with embedded ledger lines, key-value idempotency/session/rate-limit store; column-family and graph designs documented. |
 | [`portfolio-5-distributed-cloud/`](portfolio-5-distributed-cloud/) | Pending | Replication, sharding, availability, consistency, and deployment. |
 
 ---
