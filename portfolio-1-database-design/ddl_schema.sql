@@ -109,6 +109,10 @@ CREATE TABLE accounts (
     CONSTRAINT chk_account_overdraft CHECK (overdraft_limit >= 0.0000),
     CONSTRAINT chk_account_closed_at CHECK (
         (account_status = 'CLOSED') = (closed_at IS NOT NULL)
+    ),
+    CONSTRAINT chk_account_closed_zero_balance CHECK (
+        account_status <> 'CLOSED'
+        OR (current_balance = 0.0000 AND hold_balance = 0.0000)
     )
 );
 
@@ -203,6 +207,9 @@ CREATE TABLE transactions (
     ),
     CONSTRAINT chk_txn_completed_at CHECK (
         (status = 'PENDING') = (completed_at IS NULL)
+    ),
+    CONSTRAINT chk_txn_posted_has_journal CHECK (
+        status NOT IN ('SETTLED', 'REVERSED') OR journal_id IS NOT NULL
     )
 );
 
@@ -230,13 +237,13 @@ CREATE TABLE cards (
 );
 
 COMMENT ON TABLE cards IS
-    'PCI DSS scope: CVV/CVC and PIN are never stored. The full PAN is held only in the external token vault.';
+    'PCI DSS 3.3.1: CVV/CVC and PIN are never stored. The full PAN is held only in the external token vault.';
 COMMENT ON COLUMN cards.masked_pan IS
-    'Truncated PAN showing at most the first 6 and last 4 digits (PCI DSS 3.3.1).';
+    'Truncated PAN showing at most the first 6 and last 4 digits (PCI DSS 3.4.1 / 3.5.1).';
 COMMENT ON COLUMN cards.card_token IS
     'Opaque token returned by the PCI-scoped card vault; usable instead of the PAN.';
 COMMENT ON COLUMN cards.pan_hmac IS
-    'Keyed HMAC-SHA-256 fingerprint of the PAN using a KMS/HSM-held key (PCI DSS 3.5.1.2), not a plain hash.';
+    'Keyed HMAC-SHA-256 fingerprint of the PAN using a KMS/HSM-held key (PCI DSS 3.5.1.1), not a plain hash.';
 
 -- 11. Audit Logs Compliance Table
 CREATE TABLE audit_logs (
@@ -296,8 +303,9 @@ CREATE TRIGGER trg_ledger_append_only
 BEFORE UPDATE OR DELETE ON ledger_entries
 FOR EACH ROW EXECUTE FUNCTION reject_financial_mutation();
 
--- 2. Deferred constraint: every journal must have at least two lines and
---    sum(DEBIT) = sum(CREDIT) by the end of the transaction.
+-- 2. Deferred constraint: every journal must have at least two lines, post to
+--    accounts of a single currency, and sum(DEBIT) = sum(CREDIT) by the end of
+--    the transaction.
 CREATE OR REPLACE FUNCTION assert_journal_balanced()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -307,6 +315,7 @@ DECLARE
     v_lines INTEGER;
     v_debits NUMERIC(18, 4);
     v_credits NUMERIC(18, 4);
+    v_currencies INTEGER;
 BEGIN
     IF TG_TABLE_NAME = 'journal_entries' THEN
         v_journal_id := NEW.journal_id;
@@ -318,15 +327,24 @@ BEGIN
 
     SELECT
         COUNT(*),
-        COALESCE(SUM(CASE WHEN entry_type = 'DEBIT' THEN amount ELSE 0 END), 0),
-        COALESCE(SUM(CASE WHEN entry_type = 'CREDIT' THEN amount ELSE 0 END), 0)
-    INTO v_lines, v_debits, v_credits
-    FROM ledger_entries
-    WHERE journal_id = v_journal_id;
+        COALESCE(SUM(CASE WHEN le.entry_type = 'DEBIT' THEN le.amount ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN le.entry_type = 'CREDIT' THEN le.amount ELSE 0 END), 0),
+        COUNT(DISTINCT a.currency_code)
+    INTO v_lines, v_debits, v_credits, v_currencies
+    FROM ledger_entries le
+    JOIN accounts a ON a.account_id = le.account_id
+    WHERE le.journal_id = v_journal_id;
 
     IF v_lines < 2 THEN
         RAISE EXCEPTION
             'Journal % must contain at least two ledger lines', v_journal_id;
+    END IF;
+
+    -- Debits and credits in different currencies cannot be netted.
+    IF v_currencies > 1 THEN
+        RAISE EXCEPTION
+            'Journal % posts to accounts in % different currencies',
+            v_journal_id, v_currencies;
     END IF;
 
     IF v_debits <> v_credits THEN
@@ -444,7 +462,32 @@ BEFORE INSERT OR UPDATE OF
 ON transactions
 FOR EACH ROW EXECUTE FUNCTION assert_transaction_currency();
 
--- 5. Maintain customers.updated_at automatically.
+-- 5. Audit trail is append-only. The only permitted UPDATE is the
+--    ON DELETE SET NULL action of fk_audit_customer, which nulls customer_id
+--    and leaves every other column (including actor_reference) unchanged.
+CREATE OR REPLACE FUNCTION reject_audit_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'UPDATE'
+       AND OLD.customer_id IS NOT NULL
+       AND NEW.customer_id IS NULL
+       AND (to_jsonb(NEW) - 'customer_id') = (to_jsonb(OLD) - 'customer_id') THEN
+        RETURN NEW;
+    END IF;
+
+    RAISE EXCEPTION
+        '% on % is not permitted: audit trail is append-only',
+        TG_OP, TG_TABLE_NAME;
+END;
+$$;
+
+CREATE TRIGGER trg_audit_append_only
+BEFORE UPDATE OR DELETE ON audit_logs
+FOR EACH ROW EXECUTE FUNCTION reject_audit_mutation();
+
+-- 6. Maintain customers.updated_at automatically.
 CREATE OR REPLACE FUNCTION set_customer_updated_at()
 RETURNS TRIGGER
 LANGUAGE plpgsql

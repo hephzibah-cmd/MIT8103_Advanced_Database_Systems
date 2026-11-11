@@ -352,6 +352,37 @@ def run_verification():
         ],
         errors.CheckViolation,
     )
+    expect_failure(
+        "Settled transaction requires a journal",
+        [
+            f"""
+            INSERT INTO transactions
+                (transaction_id, transaction_reference, idempotency_key,
+                 source_account_id, destination_account_id, currency_code,
+                 amount, channel, status, completed_at)
+            VALUES
+                ('39999995-0000-4000-8000-000000000095', 'TXN-NO-JOURNAL-TEST',
+                 'idem-no-journal-test', '{source}', '{destination}', 'USD',
+                 1.0000, 'MOBILE_APP', 'SETTLED', CURRENT_TIMESTAMP);
+            """
+        ],
+        errors.CheckViolation,
+    )
+    expect_failure(
+        "Closed account must have zero balance",
+        [
+            f"""
+            INSERT INTO accounts
+                (account_id, customer_id, account_type_id, currency_code,
+                 account_number, current_balance, account_status, closed_at)
+            VALUES
+                ('a9999996-0000-4000-8000-000000000096',
+                 '{overdraft_customer}', 1, 'USD', '6666666666', 25.0000,
+                 'CLOSED', CURRENT_TIMESTAMP);
+            """
+        ],
+        errors.CheckViolation,
+    )
 
     print("\n--- Append-Only Financial History Tests ---")
     expect_failure(
@@ -374,6 +405,53 @@ def run_verification():
         ["DELETE FROM journal_entries;"],
         errors.RaiseException,
     )
+    expect_failure(
+        "UPDATE audit_logs",
+        ["UPDATE audit_logs SET action = 'tampered';"],
+        errors.RaiseException,
+    )
+    expect_failure(
+        "DELETE audit_logs",
+        ["DELETE FROM audit_logs;"],
+        errors.RaiseException,
+    )
+
+    try:
+        with psycopg.connect(DATABASE_URL) as conn2:
+            with conn2.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO customers
+                        (customer_id, first_name, last_name, email, phone_number, password_hash)
+                    VALUES
+                        ('c9999999-0000-4000-8000-000000000099', 'Erasure', 'Test',
+                         'erasure.test@example.com', '+2340000000099', 'test_hash');
+                """)
+                cur.execute("""
+                    INSERT INTO audit_logs
+                        (audit_id, customer_id, actor_reference, action, target_table,
+                         target_record_id, ip_address)
+                    VALUES
+                        ('49999999-0000-4000-8000-000000000099',
+                         'c9999999-0000-4000-8000-000000000099',
+                         'customer:c9999999-0000-4000-8000-000000000099',
+                         'CUSTOMER_LOGIN', 'customers',
+                         'c9999999-0000-4000-8000-000000000099', '127.0.0.1');
+                """)
+                cur.execute(
+                    "DELETE FROM customers WHERE customer_id = 'c9999999-0000-4000-8000-000000000099';"
+                )
+                cur.execute("""
+                    SELECT customer_id, actor_reference FROM audit_logs
+                    WHERE audit_id = '49999999-0000-4000-8000-000000000099';
+                """)
+                linked_customer, actor = cur.fetchone()
+            conn2.rollback()
+        record(
+            linked_customer is None and actor.startswith("customer:c9999999"),
+            "Customer deletion nulls audit_logs.customer_id; actor_reference preserved",
+        )
+    except Exception as exc:  # noqa: BLE001
+        record(False, f"Audit ON DELETE SET NULL path failed unexpectedly: {exc}")
 
     print("\n--- Deferred Double-Entry Trigger Tests ---")
     expect_failure(
@@ -436,6 +514,36 @@ def run_verification():
                 ('19999998-0000-4000-8000-000000000098', 'JRN-TEST-EMPTY',
                  'Empty test journal', 'FEE_CHARGE');
             """
+        ],
+        errors.RaiseException,
+    )
+    expect_failure(
+        "Mixed-currency journal rejected at commit",
+        [
+            """
+            INSERT INTO journal_entries
+                (journal_id, entry_reference, narrative, event_type)
+            VALUES
+                ('19999995-0000-4000-8000-000000000095', 'JRN-TEST-MIXED-CCY',
+                 'Mixed-currency test journal', 'P2P_TRANSFER');
+            """,
+            f"""
+            INSERT INTO ledger_entries
+                (ledger_entry_id, journal_id, account_id, entry_type, amount, balance_after)
+            VALUES
+                ('29999994-0000-4000-8000-000000000094',
+                 '19999995-0000-4000-8000-000000000095', '{source}',
+                 'DEBIT', 100.0000, 14400.5000);
+            """,
+            """
+            INSERT INTO ledger_entries
+                (ledger_entry_id, journal_id, account_id, entry_type, amount, balance_after)
+            VALUES
+                ('29999993-0000-4000-8000-000000000093',
+                 '19999995-0000-4000-8000-000000000095',
+                 'a0000003-0000-4000-8000-000000000003',
+                 'CREDIT', 100.0000, 750100.0000);
+            """,
         ],
         errors.RaiseException,
     )
@@ -545,6 +653,7 @@ def run_verification():
     expected_triggers = {
         "trg_journal_append_only",
         "trg_ledger_append_only",
+        "trg_audit_append_only",
         "trg_ledger_balanced",
         "trg_journal_has_lines",
         "trg_ledger_apply_balance",

@@ -1,0 +1,78 @@
+==============================================================================
+APEXBANK DIGITAL CORE BANKING - PORTFOLIO 1 POSTGRESQL VERIFICATION
+==============================================================================
+[OK] Connected: PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on x86_64-pc-linux-gnu
+
+--- Executing PostgreSQL DDL Schema ---
+[OK] DDL executed from: ddl_schema.sql
+[OK] Created 11 relations: account_types, accounts, audit_logs, cards, currencies, customers, journal_entries, kyc_verifications, ledger_entries, merchants, transactions
+
+--- Ingesting Seed Data ---
+[OK] Seed data committed from: seed_data.sql
+
+--- Table Population Audit ---
+  * account_types         :    4 rows
+  * accounts              :    8 rows
+  * audit_logs            :    2 rows
+  * cards                 :    3 rows
+  * currencies            :    4 rows
+  * customers             :    8 rows
+  * journal_entries       :    2 rows
+  * kyc_verifications     :    5 rows
+  * ledger_entries        :    6 rows
+  * merchants             :    1 rows
+  * transactions          :    2 rows
+
+--- Financial Ledger Invariant Verification ---
+  [PASS] Journal 10000001-0000-4000-8000-000000000001: debits=502.50, credits=502.50, lines=3
+  [PASS] Journal 10000002-0000-4000-8000-000000000002: debits=120.00, credits=120.00, lines=3
+  [PASS] Book totals: debits=622.50, credits=622.50
+  [PASS] All journals are balanced
+
+--- Account Balance vs Latest Ledger Snapshot ---
+  [PASS] Account balances match latest ledger snapshots (0 mismatch(es))
+
+--- PCI DSS Card-Data Verification ---
+  [PASS] No CVV/PIN columns stored: none
+  [PASS] Cards use token, keyed HMAC fingerprint, and masked PAN
+  [PASS] No full PAN stored in masked_pan, with or without separators (0 rows)
+
+--- Constraint Integrity Tests ---
+  [PASS] Anti-overdraft check: blocked (CheckViolation)
+  [PASS] Referential integrity (orphan account): blocked (ForeignKeyViolation)
+  [PASS] Idempotency key uniqueness: blocked (UniqueViolation)
+  [PASS] Self-transfer prohibition: blocked (CheckViolation)
+  [PASS] Full PAN rejection in masked_pan: blocked (CheckViolation)
+  [PASS] Separated full PAN rejection in masked_pan: blocked (CheckViolation)
+  [PASS] Transaction currency must match account currency: blocked (RaiseException)
+  [PASS] Verified KYC requires verified_at: blocked (CheckViolation)
+  [PASS] Closed account requires closed_at: blocked (CheckViolation)
+  [PASS] Settled transaction requires completed_at: blocked (CheckViolation)
+  [PASS] Settled transaction requires a journal: blocked (CheckViolation)
+  [PASS] Closed account must have zero balance: blocked (CheckViolation)
+
+--- Append-Only Financial History Tests ---
+  [PASS] UPDATE ledger_entries: blocked (RaiseException)
+  [PASS] DELETE ledger_entries: blocked (RaiseException)
+  [PASS] UPDATE journal_entries: blocked (RaiseException)
+  [PASS] DELETE journal_entries: blocked (RaiseException)
+  [PASS] UPDATE audit_logs: blocked (RaiseException)
+  [PASS] DELETE audit_logs: blocked (RaiseException)
+  [PASS] Customer deletion nulls audit_logs.customer_id; actor_reference preserved
+
+--- Deferred Double-Entry Trigger Tests ---
+  [PASS] Incorrect balance_after rejected at posting time: blocked (RaiseException)
+  [PASS] Unbalanced journal rejected at commit: blocked (RaiseException)
+  [PASS] Empty journal rejected at commit: blocked (RaiseException)
+  [PASS] Mixed-currency journal rejected at commit: blocked (RaiseException)
+  [PASS] Balanced journal accepted; posting updated account balances
+
+--- Schema Object Audit ---
+  [PASS] Integrity triggers present: trg_audit_append_only, trg_customers_updated_at, trg_journal_append_only, trg_journal_has_lines, trg_ledger_append_only, trg_ledger_apply_balance, trg_ledger_balanced, trg_transaction_currency_guard
+  [PASS] encrypted_cvv column is absent from cards
+  [PASS] audit_logs retains an immutable actor_reference
+  [PASS] All audit rows have an actor reference (0 missing)
+
+==============================================================================
+RESULT: ALL PORTFOLIO 1 POSTGRESQL CHECKS PASSED
+==============================================================================
