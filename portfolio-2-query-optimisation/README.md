@@ -22,42 +22,46 @@ From repository root:
 python portfolio-2-query-optimisation\benchmark_runner.py
 ```
 
+A full run takes several minutes, because rows are inserted one at a time so that the Portfolio 1 ledger triggers fire for every posting.
+
 The runner:
 1. Creates/reuses `apexbank_benchmark`.
 2. Loads Portfolio 1 DDL and seed.
-3. Generates deterministic benchmark data: 100 customers, 100 accounts, 100 cards, 3 merchants, 50,000 transactions.
-4. Captures `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)` plans.
-5. Measures latency over 5 timed runs after one warm-up run.
+3. Generates deterministic benchmark data: 100 customers, 100 accounts, 100 cards, 3 merchants, 50,000 transactions (1,175 heap pages, about 9.4 MB), then runs `VACUUM (ANALYZE)`.
+4. For each index scenario: one warm-up run, then `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)`, the median of 5 server-side `EXPLAIN (ANALYZE, TIMING OFF)` executor times, and 5 timed client round-trips. Index sizes are recorded with `pg_relation_size`.
+5. Captures plans for all four production queries under the final index set.
 6. Writes evidence files.
 
 ## Evidence files
 - `queries.sql`: PostgreSQL production queries, currency-safe.
-- `indexing_experiments.sql`: index baseline, composite, covering, and ordered covering experiments.
-- `benchmark_results.txt`: measured plans, latencies, and speedups.
+- `indexing_experiments.sql`: index baseline, composite, covering, and ordered covering experiments (run only on `apexbank_benchmark`).
+- `benchmark_results.txt`: measured plans, server execution times, round-trip latencies, index sizes, and speedups.
 - `query_results.txt`: first 20 rows for each production query.
-- `execution_plans_and_results.md`: summarised execution plans and results.
-- `performance_analysis.md`: measured performance findings.
+- `execution_plans_and_results.md`: summarised execution plans and plan interpretation.
+- `performance_analysis.md`: methodology, findings, trade-offs, and limitations.
 
 ## Measured results summary
-Dataset: 100 customers, 100 accounts, 100 cards, 3 merchants, 50,000 transactions.
+Dataset: 100 customers, 100 accounts, 100 cards, 3 merchants, 50,000 transactions. Figures below are from the run recorded in `benchmark_results.txt`; timings vary between runs, so treat `benchmark_results.txt` as authoritative after re-running.
 
-| Scenario | Index | Average latency | Minimum latency | Speedup vs baseline |
-|---|---|---:|---:|---:|
-| 1A | Unindexed status/date scan | 88.658 ms | 79.535 ms | 1.00x |
-| 1B | Composite `(status, initiated_at)` | 83.311 ms | 78.001 ms | 1.06x |
-| 1C | Covering `INCLUDE` index | 80.982 ms | 76.472 ms | 1.09x |
-| 2A | Unindexed account statement scan | 10.053 ms | 8.961 ms | 1.00x |
-| 2B | Single-column `source_account_id` | 5.378 ms | 4.895 ms | 1.87x |
-| 2C | Ordered covering index | 5.196 ms | 4.569 ms | 1.93x |
-| 3 | 360-degree rollup | 2.900 ms | 2.376 ms | N/A |
+| Scenario | Index | Plan | Server execution (median) | Server speedup | Index size |
+|---|---|---|---:|---:|---:|
+| 1A | None (status/date scan) | Seq Scan | 4.367 ms | 1.00x | - |
+| 1B | Composite `(status, initiated_at)` | Bitmap Heap Scan | 2.162 ms | 2.02x | 1592 kB |
+| 1C | Covering `(status, initiated_at) INCLUDE (transaction_id, amount)` | Index Only Scan | 1.148 ms | 3.80x | 3008 kB |
+| 2A | None (account statement) | Seq Scan + Sort | 2.146 ms | 1.00x | - |
+| 2B | Single-column `source_account_id` | Bitmap Heap Scan + Sort | 0.334 ms | 6.43x | 376 kB |
+| 2C | Ordered covering `(source_account_id, initiated_at DESC) INCLUDE (...)` | Index Only Scan, no Sort | 0.055 ms | 39.02x | 3784 kB |
+| 3 | 360-degree rollup (master tables only) | HashAggregate over Nested Loop | 1.033 ms | N/A | - |
 
-Latencies include Python round-trip and row fetch; `EXPLAIN ANALYZE` execution times are in `benchmark_results.txt`.
+Client round-trip latencies (Python `execute()` + `fetchall()`) are also in `benchmark_results.txt`. They are dominated by transferring and decoding rows (about 14,700 rows for Scenario 1), so they understate the index effect and are noisier than server time.
 
 ## Currency safety
 - No FX table exists in Portfolio 1, so cross-currency sums are avoided.
 - AML velocity query is USD-only with a 24-hour `RANGE` window.
 - Customer 360 query reports per-currency balances separately.
 - Merchant settlement query joins transactions only to the settlement account's currency.
+- The 30-day channel query is anchored to `MAX(initiated_at)`, so results are reproducible on the fixed dataset. Production would use `CURRENT_TIMESTAMP`.
+- The customer 360 query pre-aggregates cards per account, so an account with several cards is not double-counted in balance sums.
 - Generated data respects P1 constraints: `PENDING` transactions have `completed_at IS NULL`; terminal statuses have `completed_at` set; transaction currency matches linked accounts.
 
 ## File links
