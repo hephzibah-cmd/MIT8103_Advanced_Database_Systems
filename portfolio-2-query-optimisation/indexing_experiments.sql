@@ -1,3 +1,8 @@
+-- Portfolio 2 indexing experiments.
+-- Run ONLY against the apexbank_benchmark database built by benchmark_runner.py:
+-- this script drops the Portfolio 1 transaction indexes. The runner executes the
+-- same steps and adds a warm-up run plus repeated timings before each plan.
+
 DROP INDEX IF EXISTS idx_transactions_source;
 DROP INDEX IF EXISTS idx_transactions_status_date;
 DROP INDEX IF EXISTS idx_transactions_initiated_at;
@@ -79,8 +84,8 @@ SELECT
     c.email,
     c.tier_level,
     c.status AS customer_status,
-    COUNT(DISTINCT a.account_id) AS total_active_accounts,
-    COUNT(DISTINCT cd.card_id) AS total_linked_cards,
+    COUNT(a.account_id) AS total_active_accounts,
+    COALESCE(SUM(cd.active_cards), 0) AS total_linked_cards,
     COALESCE(SUM(a.current_balance) FILTER (WHERE a.currency_code = 'USD'), 0.0000) AS total_usd_balance,
     COALESCE(SUM(a.current_balance) FILTER (WHERE a.currency_code = 'NGN'), 0.0000) AS total_ngn_balance,
     COALESCE(SUM(a.current_balance) FILTER (WHERE a.currency_code = 'EUR'), 0.0000) AS total_eur_balance,
@@ -96,8 +101,13 @@ FROM customers c
 LEFT JOIN accounts a
     ON a.customer_id = c.customer_id
    AND a.account_status = 'ACTIVE'
-LEFT JOIN cards cd
-    ON cd.account_id = a.account_id
-   AND cd.card_status = 'ACTIVE'
+LEFT JOIN (
+    -- Pre-aggregate cards per account so an account with several cards
+    -- is not repeated in the join and its balance is not double-counted.
+    SELECT account_id, COUNT(*) AS active_cards
+    FROM cards
+    WHERE card_status = 'ACTIVE'
+    GROUP BY account_id
+) cd ON cd.account_id = a.account_id
 GROUP BY c.customer_id, c.first_name, c.last_name, c.email, c.tier_level, c.status
 ORDER BY total_usd_balance DESC;

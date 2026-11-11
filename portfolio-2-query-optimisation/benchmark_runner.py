@@ -95,8 +95,8 @@ SELECT
     c.email,
     c.tier_level,
     c.status AS customer_status,
-    COUNT(DISTINCT a.account_id) AS total_active_accounts,
-    COUNT(DISTINCT cd.card_id) AS total_linked_cards,
+    COUNT(a.account_id) AS total_active_accounts,
+    COALESCE(SUM(cd.active_cards), 0) AS total_linked_cards,
     COALESCE(SUM(a.current_balance) FILTER (WHERE a.currency_code = 'USD'), 0.0000) AS total_usd_balance,
     COALESCE(SUM(a.current_balance) FILTER (WHERE a.currency_code = 'NGN'), 0.0000) AS total_ngn_balance,
     COALESCE(SUM(a.current_balance) FILTER (WHERE a.currency_code = 'EUR'), 0.0000) AS total_eur_balance,
@@ -112,9 +112,14 @@ FROM customers c
 LEFT JOIN accounts a
     ON a.customer_id = c.customer_id
    AND a.account_status = 'ACTIVE'
-LEFT JOIN cards cd
-    ON cd.account_id = a.account_id
-   AND cd.card_status = 'ACTIVE'
+LEFT JOIN (
+    -- Pre-aggregate cards per account so an account with several cards
+    -- is not repeated in the join and its balance is not double-counted.
+    SELECT account_id, COUNT(*) AS active_cards
+    FROM cards
+    WHERE card_status = 'ACTIVE'
+    GROUP BY account_id
+) cd ON cd.account_id = a.account_id
 GROUP BY c.customer_id, c.first_name, c.last_name, c.email, c.tier_level, c.status
 ORDER BY total_usd_balance DESC;
 """
@@ -152,7 +157,10 @@ SELECT
     ROUND(AVG(t.amount), 2) AS average_ticket_size,
     ROUND(MAX(t.amount), 2) AS peak_ticket_size
 FROM transactions t
-WHERE t.initiated_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+-- Anchored to the latest transaction rather than CURRENT_TIMESTAMP so the
+-- result is reproducible on the fixed benchmark dataset. In production use
+-- CURRENT_TIMESTAMP - INTERVAL '30 days'.
+WHERE t.initiated_at >= (SELECT MAX(initiated_at) FROM transactions) - INTERVAL '30 days'
 GROUP BY t.channel, t.currency_code
 HAVING COUNT(*) > 0
 ORDER BY failure_rate_pct DESC;
@@ -177,7 +185,7 @@ BENCHMARK_QUERY_3 = CUSTOMER_360_QUERY
 PRODUCTION_QUERIES = [
     ("AML 24-hour USD velocity and structuring detection", AML_QUERY),
     ("360-degree customer financial position", CUSTOMER_360_QUERY),
-    ("Merchant daily settlement reconciliation", MERCHANT_SETTLEMENT_QUERY),
+    ("Merchant settlement reconciliation (all periods)", MERCHANT_SETTLEMENT_QUERY),
     ("30-day channel anomaly diagnostics", CHANNEL_ANOMALY_QUERY),
 ]
 
@@ -552,14 +560,25 @@ def drop_transaction_indexes(cur):
         cur.execute(sql.SQL("DROP INDEX IF EXISTS {};").format(sql.Identifier(name)))
 
 
+ITERATIONS = 5
+
+
 def capture_plan(cur, query):
     cur.execute("EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " + query)
     return "\n".join(row[0] for row in cur.fetchall())
 
 
-def time_query(cur, query, iterations=5):
-    cur.execute(query)
-    cur.fetchall()
+def server_execution_ms(cur, query, iterations=ITERATIONS):
+    # Server-side executor time only (no network transfer or Python row
+    # decoding). TIMING OFF removes per-node clock overhead.
+    times = []
+    for _ in range(iterations):
+        cur.execute("EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) " + query)
+        times.append(float(cur.fetchone()[0][0]["Execution Time"]))
+    return statistics.median(times)
+
+
+def time_query(cur, query, iterations=ITERATIONS):
     times = []
     for _ in range(iterations):
         started = time.perf_counter()
@@ -569,15 +588,29 @@ def time_query(cur, query, iterations=5):
     return statistics.mean(times), min(times)
 
 
-def benchmark(cur, name, query):
+def index_size(cur, index_name):
+    if index_name is None:
+        return None
+    cur.execute("SELECT pg_size_pretty(pg_relation_size(%s::regclass));", (index_name,))
+    return cur.fetchone()[0]
+
+
+def benchmark(cur, name, query, index_name=None):
+    # Warm-up run first so every scenario's plan and timings start from the
+    # same cache state (a freshly built index is otherwise read cold).
+    cur.execute(query)
+    cur.fetchall()
     plan = capture_plan(cur, query)
+    server_ms = server_execution_ms(cur, query)
     average_ms, minimum_ms = time_query(cur, query)
     return {
         "name": name,
         "query": query.strip(),
         "plan": plan,
+        "server_ms": server_ms,
         "average_ms": average_ms,
         "minimum_ms": minimum_ms,
+        "index_size": index_size(cur, index_name),
     }
 
 
@@ -590,7 +623,8 @@ def run_benchmarks(conn):
 
         cur.execute("CREATE INDEX idx_txn_status_date ON transactions (status, initiated_at);")
         cur.execute("VACUUM (ANALYZE) transactions;")
-        results.append(benchmark(cur, "1B: Composite B-tree (status, initiated_at)", BENCHMARK_QUERY_1))
+        results.append(benchmark(cur, "1B: Composite B-tree (status, initiated_at)", BENCHMARK_QUERY_1,
+                                 "idx_txn_status_date"))
 
         cur.execute("DROP INDEX IF EXISTS idx_txn_status_date;")
         cur.execute(
@@ -598,7 +632,8 @@ def run_benchmarks(conn):
             "ON transactions (status, initiated_at) INCLUDE (transaction_id, amount);"
         )
         cur.execute("VACUUM (ANALYZE) transactions;")
-        results.append(benchmark(cur, "1C: Covering index with INCLUDE", BENCHMARK_QUERY_1))
+        results.append(benchmark(cur, "1C: Covering index with INCLUDE", BENCHMARK_QUERY_1,
+                                 "idx_txn_status_date_cover"))
 
         drop_transaction_indexes(cur)
         cur.execute("VACUUM (ANALYZE) transactions;")
@@ -606,7 +641,8 @@ def run_benchmarks(conn):
 
         cur.execute("CREATE INDEX idx_txn_source ON transactions (source_account_id);")
         cur.execute("VACUUM (ANALYZE) transactions;")
-        results.append(benchmark(cur, "2B: Single-column source account index", BENCHMARK_QUERY_2))
+        results.append(benchmark(cur, "2B: Single-column source account index", BENCHMARK_QUERY_2,
+                                 "idx_txn_source"))
 
         cur.execute("DROP INDEX IF EXISTS idx_txn_source;")
         cur.execute(
@@ -615,7 +651,8 @@ def run_benchmarks(conn):
             "INCLUDE (transaction_id, amount, currency_code);"
         )
         cur.execute("VACUUM (ANALYZE) transactions;")
-        results.append(benchmark(cur, "2C: Ordered covering index", BENCHMARK_QUERY_2))
+        results.append(benchmark(cur, "2C: Ordered covering index", BENCHMARK_QUERY_2,
+                                 "idx_txn_source_date_cover"))
 
         drop_transaction_indexes(cur)
         cur.execute(
@@ -629,6 +666,11 @@ def run_benchmarks(conn):
         )
         cur.execute("VACUUM (ANALYZE) transactions;")
         results.append(benchmark(cur, "3: 360-degree analytical rollup", BENCHMARK_QUERY_3))
+
+        # Plans for the other production queries under the final index set.
+        for name, query in PRODUCTION_QUERIES:
+            if query is not BENCHMARK_QUERY_3:
+                results.append(benchmark(cur, f"P: {name}", query))
     return results
 
 
@@ -666,6 +708,11 @@ def build_report(conn, results, counts):
     with conn.cursor() as cur:
         cur.execute("SELECT version();")
         version = cur.fetchone()[0]
+        cur.execute(
+            "SELECT relpages, reltuples::bigint, pg_size_pretty(pg_relation_size(oid)) "
+            "FROM pg_class WHERE oid = 'transactions'::regclass;"
+        )
+        heap_pages, heap_tuples, heap_size = cur.fetchone()
 
     lines = []
     lines.append("=" * 80)
@@ -676,24 +723,35 @@ def build_report(conn, results, counts):
     lines.append(f"Dataset: {counts['customers']} customers, {counts['accounts']} accounts, "
                  f"{counts['cards']} cards, {counts['merchants']} merchants, "
                  f"{counts['transactions']} transactions")
+    lines.append(f"Transactions heap: {heap_pages} pages of 8 kB, "
+                 f"{heap_tuples} tuples (planner statistics), {heap_size}")
     lines.append("Portfolio 1 schema: portfolio-1-database-design/ddl_schema.sql")
     lines.append("Portfolio 1 seed: portfolio-1-database-design/seed_data.sql")
-    lines.append("Iterations: 5 timed runs after one warm-up run")
-    lines.append("Plans: EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)")
+    lines.append(f"Iterations: one warm-up run, then {ITERATIONS} server-side "
+                 f"EXPLAIN (ANALYZE, TIMING OFF) runs and {ITERATIONS} timed client round-trips")
+    lines.append("Server execution time: median executor time reported by PostgreSQL "
+                 "(excludes network transfer and Python row decoding)")
+    lines.append("Round-trip latency: Python perf_counter around execute() + fetchall()")
+    lines.append("Plans: EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT), captured after the warm-up run")
     lines.append("")
 
-    baseline_1 = results[0]["average_ms"]
-    baseline_2 = results[3]["average_ms"]
+    baselines = {"1": results[0], "2": results[3]}
     for result in results:
         lines.append("-" * 80)
         lines.append(result["name"])
         lines.append("-" * 80)
-        lines.append(f"Average latency: {result['average_ms']:.3f} ms")
-        lines.append(f"Minimum latency: {result['minimum_ms']:.3f} ms")
-        if result["name"].startswith("1"):
-            lines.append(f"Speedup vs 1A: {baseline_1 / result['average_ms']:.2f}x")
-        elif result["name"].startswith("2"):
-            lines.append(f"Speedup vs 2A: {baseline_2 / result['average_ms']:.2f}x")
+        lines.append(f"Server execution time (median): {result['server_ms']:.3f} ms")
+        lines.append(f"Round-trip average latency: {result['average_ms']:.3f} ms")
+        lines.append(f"Round-trip minimum latency: {result['minimum_ms']:.3f} ms")
+        if result["index_size"] is not None:
+            lines.append(f"Index size: {result['index_size']}")
+        base = baselines.get(result["name"][0])
+        if base is not None:
+            label = base["name"][:2]
+            lines.append(f"Server-time speedup vs {label}: "
+                         f"{base['server_ms'] / result['server_ms']:.2f}x")
+            lines.append(f"Round-trip speedup vs {label}: "
+                         f"{base['average_ms'] / result['average_ms']:.2f}x")
         lines.append("Execution plan:")
         lines.append(result["plan"])
         lines.append("")
