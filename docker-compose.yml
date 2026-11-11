@@ -16,5 +16,18 @@ services:
       timeout: 5s
       retries: 12
 
+  mongo:
+    image: mongo:7.0
+    container_name: mit8103-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: apexbank
+      MONGO_INITDB_ROOT_PASSWORD: apexbank_dev
+      MONGO_INITDB_DATABASE: apexbank
+    ports:
+      - "27017:27017"
+    volumes:
+      - apexbank_mongodata:/data/db
+
 volumes:
   apexbank_pgdata:
+  apexbank_mongodata:
