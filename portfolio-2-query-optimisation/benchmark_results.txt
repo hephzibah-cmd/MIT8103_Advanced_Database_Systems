@@ -4,160 +4,291 @@ PORTFOLIO 2: POSTGRESQL QUERY PROCESSING AND OPTIMISATION REPORT
 Database Engine: PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
 Benchmark Database: apexbank_benchmark
 Dataset: 100 customers, 100 accounts, 100 cards, 3 merchants, 50000 transactions
+Transactions heap: 1175 pages of 8 kB, 50000 tuples (planner statistics), 9400 kB
 Portfolio 1 schema: portfolio-1-database-design/ddl_schema.sql
 Portfolio 1 seed: portfolio-1-database-design/seed_data.sql
-Iterations: 5 timed runs after one warm-up run
-Plans: EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+Iterations: one warm-up run, then 5 server-side EXPLAIN (ANALYZE, TIMING OFF) runs and 5 timed client round-trips
+Server execution time: median executor time reported by PostgreSQL (excludes network transfer and Python row decoding)
+Round-trip latency: Python perf_counter around execute() + fetchall()
+Plans: EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT), captured after the warm-up run
 
 --------------------------------------------------------------------------------
 1A: Unindexed status/date scan
 --------------------------------------------------------------------------------
-Average latency: 92.225 ms
-Minimum latency: 83.262 ms
-Speedup vs 1A: 1.00x
+Server execution time (median): 4.367 ms
+Round-trip average latency: 50.145 ms
+Round-trip minimum latency: 39.266 ms
+Server-time speedup vs 1A: 1.00x
+Round-trip speedup vs 1A: 1.00x
 Execution plan:
-Seq Scan on transactions  (cost=0.00..2050.00 rows=14701 width=38) (actual time=1.400..8.211 rows=14672 loops=1)
+Seq Scan on transactions  (cost=0.00..2050.00 rows=14714 width=38) (actual time=0.808..4.887 rows=14672 loops=1)
   Filter: ((initiated_at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (initiated_at <= '2026-06-30 00:00:00+00'::timestamp with time zone) AND ((status)::text = 'SETTLED'::text))
   Rows Removed by Filter: 35328
   Buffers: shared hit=1175
-Planning:
-  Buffers: shared hit=24
-Planning Time: 0.186 ms
-Execution Time: 8.847 ms
+Planning Time: 0.077 ms
+Execution Time: 5.254 ms
 
 --------------------------------------------------------------------------------
 1B: Composite B-tree (status, initiated_at)
 --------------------------------------------------------------------------------
-Average latency: 76.687 ms
-Minimum latency: 71.312 ms
-Speedup vs 1A: 1.20x
+Server execution time (median): 2.162 ms
+Round-trip average latency: 48.686 ms
+Round-trip minimum latency: 45.422 ms
+Index size: 1592 kB
+Server-time speedup vs 1A: 2.02x
+Round-trip speedup vs 1A: 1.03x
 Execution plan:
-Bitmap Heap Scan on transactions  (cost=423.18..1854.69 rows=14658 width=38) (actual time=1.652..4.845 rows=14672 loops=1)
+Bitmap Heap Scan on transactions  (cost=423.21..1854.76 rows=14660 width=38) (actual time=1.020..2.758 rows=14672 loops=1)
   Recheck Cond: (((status)::text = 'SETTLED'::text) AND (initiated_at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (initiated_at <= '2026-06-30 00:00:00+00'::timestamp with time zone))
   Heap Blocks: exact=492
-  Buffers: shared hit=492 read=59
-  ->  Bitmap Index Scan on idx_txn_status_date  (cost=0.00..419.52 rows=14658 width=0) (actual time=1.575..1.577 rows=14672 loops=1)
+  Buffers: shared hit=551
+  ->  Bitmap Index Scan on idx_txn_status_date  (cost=0.00..419.54 rows=14660 width=0) (actual time=0.974..0.975 rows=14672 loops=1)
         Index Cond: (((status)::text = 'SETTLED'::text) AND (initiated_at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (initiated_at <= '2026-06-30 00:00:00+00'::timestamp with time zone))
-        Buffers: shared read=59
-Planning:
-  Buffers: shared hit=15
-Planning Time: 0.187 ms
-Execution Time: 5.496 ms
+        Buffers: shared hit=59
+Planning Time: 0.100 ms
+Execution Time: 3.112 ms
 
 --------------------------------------------------------------------------------
 1C: Covering index with INCLUDE
 --------------------------------------------------------------------------------
-Average latency: 88.012 ms
-Minimum latency: 73.470 ms
-Speedup vs 1A: 1.05x
+Server execution time (median): 1.148 ms
+Round-trip average latency: 51.294 ms
+Round-trip minimum latency: 39.624 ms
+Index size: 3008 kB
+Server-time speedup vs 1A: 3.80x
+Round-trip speedup vs 1A: 0.98x
 Execution plan:
-Index Only Scan using idx_txn_status_date_cover on transactions  (cost=0.41..773.57 rows=14629 width=38) (actual time=0.032..3.043 rows=14672 loops=1)
+Index Only Scan using idx_txn_status_date_cover on transactions  (cost=0.41..768.69 rows=14590 width=38) (actual time=0.023..1.503 rows=14672 loops=1)
   Index Cond: ((status = 'SETTLED'::text) AND (initiated_at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (initiated_at <= '2026-06-30 00:00:00+00'::timestamp with time zone))
   Heap Fetches: 0
-  Buffers: shared hit=1 read=111
-Planning:
-  Buffers: shared hit=17
-Planning Time: 0.138 ms
-Execution Time: 3.685 ms
+  Buffers: shared hit=112
+Planning Time: 0.081 ms
+Execution Time: 1.863 ms
 
 --------------------------------------------------------------------------------
 2A: Unindexed account statement scan
 --------------------------------------------------------------------------------
-Average latency: 11.266 ms
-Minimum latency: 10.393 ms
-Speedup vs 2A: 1.00x
+Server execution time (median): 2.146 ms
+Round-trip average latency: 4.521 ms
+Round-trip minimum latency: 3.621 ms
+Server-time speedup vs 2A: 1.00x
+Round-trip speedup vs 2A: 1.00x
 Execution plan:
-Sort  (cost=1835.10..1836.94 rows=737 width=35) (actual time=4.818..4.855 rows=743 loops=1)
+Sort  (cost=1836.20..1838.09 rows=757 width=35) (actual time=2.499..2.517 rows=743 loops=1)
   Sort Key: initiated_at DESC
   Sort Method: quicksort  Memory: 71kB
   Buffers: shared hit=1175
-  ->  Seq Scan on transactions  (cost=0.00..1800.00 rows=737 width=35) (actual time=0.014..4.653 rows=743 loops=1)
+  ->  Seq Scan on transactions  (cost=0.00..1800.00 rows=757 width=35) (actual time=0.006..2.417 rows=743 loops=1)
         Filter: (source_account_id = 'fa91764d-3385-5037-bf44-84d8aba4d499'::uuid)
         Rows Removed by Filter: 49257
         Buffers: shared hit=1175
-Planning:
-  Buffers: shared hit=32
-Planning Time: 0.210 ms
-Execution Time: 4.911 ms
+Planning Time: 0.037 ms
+Execution Time: 2.541 ms
 
 --------------------------------------------------------------------------------
 2B: Single-column source account index
 --------------------------------------------------------------------------------
-Average latency: 6.112 ms
-Minimum latency: 5.400 ms
-Speedup vs 2A: 1.84x
+Server execution time (median): 0.334 ms
+Round-trip average latency: 2.036 ms
+Round-trip minimum latency: 1.615 ms
+Index size: 376 kB
+Server-time speedup vs 2A: 6.43x
+Round-trip speedup vs 2A: 2.22x
 Execution plan:
-Sort  (cost=1133.32..1135.15 rows=733 width=35) (actual time=0.939..0.975 rows=743 loops=1)
+Sort  (cost=1150.41..1152.32 rows=763 width=35) (actual time=0.461..0.480 rows=743 loops=1)
   Sort Key: initiated_at DESC
   Sort Method: quicksort  Memory: 71kB
-  Buffers: shared hit=575 read=3
-  ->  Bitmap Heap Scan on transactions  (cost=9.97..1098.44 rows=733 width=35) (actual time=0.160..0.794 rows=743 loops=1)
+  Buffers: shared hit=578
+  ->  Bitmap Heap Scan on transactions  (cost=10.20..1113.88 rows=763 width=35) (actual time=0.070..0.378 rows=743 loops=1)
         Recheck Cond: (source_account_id = 'fa91764d-3385-5037-bf44-84d8aba4d499'::uuid)
         Heap Blocks: exact=575
-        Buffers: shared hit=575 read=3
-        ->  Bitmap Index Scan on idx_txn_source  (cost=0.00..9.79 rows=733 width=0) (actual time=0.079..0.079 rows=743 loops=1)
+        Buffers: shared hit=578
+        ->  Bitmap Index Scan on idx_txn_source  (cost=0.00..10.01 rows=763 width=0) (actual time=0.032..0.032 rows=743 loops=1)
               Index Cond: (source_account_id = 'fa91764d-3385-5037-bf44-84d8aba4d499'::uuid)
-              Buffers: shared read=3
-Planning:
-  Buffers: shared hit=22
-Planning Time: 0.200 ms
-Execution Time: 1.025 ms
+              Buffers: shared hit=3
+Planning Time: 0.039 ms
+Execution Time: 0.505 ms
 
 --------------------------------------------------------------------------------
 2C: Ordered covering index
 --------------------------------------------------------------------------------
-Average latency: 5.470 ms
-Minimum latency: 4.001 ms
-Speedup vs 2A: 2.06x
+Server execution time (median): 0.055 ms
+Round-trip average latency: 2.133 ms
+Round-trip minimum latency: 1.442 ms
+Index size: 3784 kB
+Server-time speedup vs 2A: 39.02x
+Round-trip speedup vs 2A: 2.12x
 Execution plan:
-Index Only Scan using idx_txn_source_date_cover on transactions  (cost=0.41..41.19 rows=730 width=35) (actual time=0.029..0.157 rows=743 loops=1)
+Index Only Scan using idx_txn_source_date_cover on transactions  (cost=0.41..45.94 rows=773 width=35) (actual time=0.006..0.054 rows=743 loops=1)
   Index Cond: (source_account_id = 'fa91764d-3385-5037-bf44-84d8aba4d499'::uuid)
   Heap Fetches: 0
-  Buffers: shared hit=1 read=10
-Planning:
-  Buffers: shared hit=20
-Planning Time: 0.155 ms
-Execution Time: 0.203 ms
+  Buffers: shared hit=11
+Planning Time: 0.042 ms
+Execution Time: 0.075 ms
 
 --------------------------------------------------------------------------------
 3: 360-degree analytical rollup
 --------------------------------------------------------------------------------
-Average latency: 6.543 ms
-Minimum latency: 5.661 ms
+Server execution time (median): 1.033 ms
+Round-trip average latency: 2.235 ms
+Round-trip minimum latency: 2.121 ms
 Execution plan:
-Sort  (cost=477.37..477.62 rows=100 width=341) (actual time=3.161..3.169 rows=100 loops=1)
+Sort  (cost=253.84..254.09 rows=100 width=365) (actual time=1.447..1.452 rows=100 loops=1)
   Sort Key: (COALESCE(sum(a.current_balance) FILTER (WHERE (a.currency_code = 'USD'::bpchar)), 0.0000)) DESC
-  Sort Method: quicksort  Memory: 42kB
-  Buffers: shared hit=602
-  ->  GroupAggregate  (cost=466.55..474.05 rows=100 width=341) (actual time=2.889..3.105 rows=100 loops=1)
+  Sort Method: quicksort  Memory: 41kB
+  Buffers: shared hit=305
+  ->  HashAggregate  (cost=246.52..250.52 rows=100 width=365) (actual time=1.362..1.405 rows=100 loops=1)
         Group Key: c.customer_id
-        Buffers: shared hit=602
-        ->  Sort  (cost=466.55..466.80 rows=100 width=120) (actual time=2.867..2.875 rows=100 loops=1)
-              Sort Key: c.customer_id, a.account_id
-              Sort Method: quicksort  Memory: 39kB
-              Buffers: shared hit=602
-              ->  Nested Loop Left Join  (cost=6.86..463.23 rows=100 width=120) (actual time=0.028..2.818 rows=100 loops=1)
-                    Buffers: shared hit=602
-                    ->  Seq Scan on customers c  (cost=0.00..3.00 rows=100 width=69) (actual time=0.003..0.013 rows=100 loops=1)
-                          Buffers: shared hit=2
-                    ->  Hash Right Join  (cost=6.86..11.39 rows=1 width=67) (actual time=0.015..0.027 rows=1 loops=100)
-                          Hash Cond: (cd.account_id = a.account_id)
-                          Buffers: shared hit=600
-                          ->  Seq Scan on cards cd  (cost=0.00..4.25 rows=100 width=32) (actual time=0.000..0.014 rows=100 loops=100)
+        Batches: 1  Memory Usage: 144kB
+        Buffers: shared hit=305
+        ->  Nested Loop Left Join  (cost=11.65..243.02 rows=100 width=112) (actual time=0.036..1.297 rows=100 loops=1)
+              Buffers: shared hit=305
+              ->  Seq Scan on customers c  (cost=0.00..3.00 rows=100 width=69) (actual time=0.001..0.006 rows=100 loops=1)
+                    Buffers: shared hit=2
+              ->  Hash Right Join  (cost=11.65..13.93 rows=1 width=59) (actual time=0.007..0.013 rows=1 loops=100)
+                    Hash Cond: (cards.account_id = a.account_id)
+                    Buffers: shared hit=303
+                    ->  HashAggregate  (cost=4.75..5.75 rows=100 width=24) (actual time=0.000..0.005 rows=100 loops=100)
+                          Group Key: cards.account_id
+                          Batches: 1  Memory Usage: 24kB
+                          Buffers: shared hit=3
+                          ->  Seq Scan on cards  (cost=0.00..4.25 rows=100 width=16) (actual time=0.002..0.010 rows=100 loops=1)
                                 Filter: ((card_status)::text = 'ACTIVE'::text)
+                                Buffers: shared hit=3
+                    ->  Hash  (cost=6.89..6.89 rows=1 width=51) (actual time=0.002..0.002 rows=1 loops=100)
+                          Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                          Buffers: shared hit=300
+                          ->  Bitmap Heap Scan on accounts a  (cost=2.88..6.89 rows=1 width=51) (actual time=0.001..0.001 rows=1 loops=100)
+                                Recheck Cond: (customer_id = c.customer_id)
+                                Filter: ((account_status)::text = 'ACTIVE'::text)
+                                Heap Blocks: exact=100
                                 Buffers: shared hit=300
-                          ->  Hash  (cost=6.85..6.85 rows=1 width=51) (actual time=0.004..0.004 rows=1 loops=100)
-                                Buckets: 1024  Batches: 1  Memory Usage: 9kB
-                                Buffers: shared hit=300
-                                ->  Bitmap Heap Scan on accounts a  (cost=2.84..6.85 rows=1 width=51) (actual time=0.003..0.003 rows=1 loops=100)
-                                      Recheck Cond: (customer_id = c.customer_id)
-                                      Filter: ((account_status)::text = 'ACTIVE'::text)
-                                      Heap Blocks: exact=100
-                                      Buffers: shared hit=300
-                                      ->  Bitmap Index Scan on idx_accounts_customer  (cost=0.00..2.83 rows=1 width=0) (actual time=0.002..0.002 rows=1 loops=100)
-                                            Index Cond: (customer_id = c.customer_id)
-                                            Buffers: shared hit=200
+                                ->  Bitmap Index Scan on idx_accounts_customer  (cost=0.00..2.88 rows=1 width=0) (actual time=0.001..0.001 rows=1 loops=100)
+                                      Index Cond: (customer_id = c.customer_id)
+                                      Buffers: shared hit=200
 Planning:
-  Buffers: shared hit=89
-Planning Time: 0.453 ms
-Execution Time: 3.235 ms
+  Buffers: shared hit=13
+Planning Time: 0.169 ms
+Execution Time: 1.491 ms
+
+--------------------------------------------------------------------------------
+P: AML 24-hour USD velocity and structuring detection
+--------------------------------------------------------------------------------
+Server execution time (median): 32.312 ms
+Round-trip average latency: 81.611 ms
+Round-trip minimum latency: 71.798 ms
+Execution plan:
+Sort  (cost=5216.20..5246.30 rows=12041 width=136) (actual time=37.341..37.920 rows=15557 loops=1)
+  Sort Key: rolling.initiated_at DESC
+  Sort Method: quicksort  Memory: 2112kB
+  Buffers: shared hit=1264
+  ->  Subquery Scan on rolling  (cost=3660.99..4400.08 rows=12041 width=136) (actual time=19.675..34.102 rows=15557 loops=1)
+        Filter: ((rolling.rolling_24h_amount >= 5000.00) OR (rolling.amount >= 5000.00))
+        Rows Removed by Filter: 1533
+        Buffers: shared hit=1264
+        ->  WindowAgg  (cost=3660.99..4085.29 rows=16972 width=152) (actual time=19.671..32.195 rows=17090 loops=1)
+              Buffers: shared hit=1264
+              ->  Sort  (cost=3660.99..3703.42 rows=16972 width=68) (actual time=19.654..20.522 rows=17090 loops=1)
+                    Sort Key: t.source_account_id, t.initiated_at
+                    Sort Method: quicksort  Memory: 2391kB
+                    Buffers: shared hit=1264
+                    ->  Hash Join  (cost=4.53..2468.64 rows=16972 width=68) (actual time=0.035..12.535 rows=17090 loops=1)
+                          Hash Cond: (a.customer_id = c.customer_id)
+                          Buffers: shared hit=1264
+                          ->  Nested Loop  (cost=0.28..2417.94 rows=16972 width=65) (actual time=0.013..10.722 rows=17090 loops=1)
+                                Buffers: shared hit=1262
+                                ->  Seq Scan on transactions t  (cost=0.00..1925.00 rows=16972 width=49) (actual time=0.005..6.754 rows=17090 loops=1)
+                                      Filter: (((status)::text = ANY ('{SETTLED,PENDING}'::text[])) AND (currency_code = 'USD'::bpchar))
+                                      Rows Removed by Filter: 32910
+                                      Buffers: shared hit=1175
+                                ->  Memoize  (cost=0.28..0.72 rows=1 width=32) (actual time=0.000..0.000 rows=1 loops=17090)
+                                      Cache Key: t.source_account_id
+                                      Cache Mode: logical
+                                      Hits: 17061  Misses: 29  Evictions: 0  Overflows: 0  Memory Usage: 5kB
+                                      Buffers: shared hit=87
+                                      ->  Index Scan using accounts_pkey on accounts a  (cost=0.27..0.71 rows=1 width=32) (actual time=0.002..0.002 rows=1 loops=29)
+                                            Index Cond: (account_id = t.source_account_id)
+                                            Buffers: shared hit=87
+                          ->  Hash  (cost=3.00..3.00 rows=100 width=35) (actual time=0.018..0.019 rows=100 loops=1)
+                                Buckets: 1024  Batches: 1  Memory Usage: 15kB
+                                Buffers: shared hit=2
+                                ->  Seq Scan on customers c  (cost=0.00..3.00 rows=100 width=35) (actual time=0.001..0.009 rows=100 loops=1)
+                                      Buffers: shared hit=2
+Planning:
+  Buffers: shared hit=16
+Planning Time: 0.313 ms
+Execution Time: 38.367 ms
+
+--------------------------------------------------------------------------------
+P: Merchant settlement reconciliation (all periods)
+--------------------------------------------------------------------------------
+Server execution time (median): 6.954 ms
+Round-trip average latency: 7.801 ms
+Round-trip minimum latency: 7.352 ms
+Execution plan:
+Sort  (cost=2561.86..2561.89 rows=12 width=201) (actual time=8.951..8.954 rows=3 loops=1)
+  Sort Key: (COALESCE(round(sum(CASE WHEN ((t.status)::text = 'SETTLED'::text) THEN t.amount ELSE '0'::numeric END), 2), '0'::numeric)) DESC
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=1185
+  ->  HashAggregate  (cost=2561.31..2561.64 rows=12 width=201) (actual time=8.945..8.949 rows=3 loops=1)
+        Group Key: m.merchant_id, t.currency_code
+        Batches: 1  Memory Usage: 24kB
+        Buffers: shared hit=1185
+        ->  Hash Right Join  (cost=26.01..2104.18 rows=13061 width=82) (actual time=0.060..6.112 rows=10684 loops=1)
+              Hash Cond: ((t.merchant_id = m.merchant_id) AND (t.currency_code = a.currency_code))
+              Buffers: shared hit=1185
+              ->  Seq Scan on transactions t  (cost=0.00..1675.00 rows=50000 width=53) (actual time=0.002..2.201 rows=50000 loops=1)
+                    Buffers: shared hit=1175
+              ->  Hash  (cost=25.96..25.96 rows=3 width=49) (actual time=0.023..0.025 rows=3 loops=1)
+                    Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                    Buffers: shared hit=10
+                    ->  Nested Loop  (cost=4.29..25.96 rows=3 width=49) (actual time=0.012..0.022 rows=3 loops=1)
+                          Buffers: shared hit=10
+                          ->  Seq Scan on merchants m  (cost=0.00..1.03 rows=3 width=61) (actual time=0.002..0.003 rows=3 loops=1)
+                                Buffers: shared hit=1
+                          ->  Memoize  (cost=4.29..8.30 rows=1 width=20) (actual time=0.005..0.005 rows=1 loops=3)
+                                Cache Key: m.settlement_account_id
+                                Cache Mode: logical
+                                Hits: 0  Misses: 3  Evictions: 0  Overflows: 0  Memory Usage: 1kB
+                                Buffers: shared hit=9
+                                ->  Bitmap Heap Scan on accounts a  (cost=4.28..8.29 rows=1 width=20) (actual time=0.004..0.004 rows=1 loops=3)
+                                      Recheck Cond: (m.settlement_account_id = account_id)
+                                      Heap Blocks: exact=3
+                                      Buffers: shared hit=9
+                                      ->  Bitmap Index Scan on accounts_pkey  (cost=0.00..4.28 rows=1 width=0) (actual time=0.003..0.003 rows=1 loops=3)
+                                            Index Cond: (account_id = m.settlement_account_id)
+                                            Buffers: shared hit=6
+Planning:
+  Buffers: shared hit=13
+Planning Time: 0.185 ms
+Execution Time: 8.987 ms
+
+--------------------------------------------------------------------------------
+P: 30-day channel anomaly diagnostics
+--------------------------------------------------------------------------------
+Server execution time (median): 9.844 ms
+Round-trip average latency: 10.905 ms
+Round-trip minimum latency: 10.210 ms
+Execution plan:
+Sort  (cost=4100.40..4100.42 rows=5 width=136) (actual time=11.684..11.685 rows=16 loops=1)
+  Sort Key: (round(((100.0 * (count(*) FILTER (WHERE ((t.status)::text = 'FAILED'::text)))::numeric) / (count(*))::numeric), 2)) DESC
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=2350
+  InitPlan 1 (returns $0)
+    ->  Aggregate  (cost=1800.00..1800.01 rows=1 width=8) (actual time=5.589..5.589 rows=1 loops=1)
+          Buffers: shared hit=1175
+          ->  Seq Scan on transactions  (cost=0.00..1675.00 rows=50000 width=8) (actual time=0.000..2.069 rows=50000 loops=1)
+                Buffers: shared hit=1175
+  ->  HashAggregate  (cost=2300.01..2300.34 rows=5 width=136) (actual time=11.669..11.678 rows=16 loops=1)
+        Group Key: t.channel, t.currency_code
+        Filter: (count(*) > 0)
+        Batches: 1  Memory Usage: 32kB
+        Buffers: shared hit=2350
+        ->  Seq Scan on transactions t  (cost=0.00..1925.00 rows=16667 width=30) (actual time=5.594..10.888 rows=3593 loops=1)
+              Filter: (initiated_at >= ($0 - '30 days'::interval))
+              Rows Removed by Filter: 46407
+              Buffers: shared hit=2350
+Planning:
+  Buffers: shared hit=9
+Planning Time: 0.142 ms
+Execution Time: 11.706 ms
