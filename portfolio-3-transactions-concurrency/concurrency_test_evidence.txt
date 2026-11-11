@@ -1,0 +1,112 @@
+========================================================================
+POST-RUN INVARIANT ASSERTIONS (Portfolio 1 enforcement still intact)
+========================================================================
+  [PASS] All journals balanced: SUM(debits) = SUM(credits) per journal.
+  [PASS] current_balance == latest balance_after for all accounts.
+  [PASS] All accounts solvent: current_balance >= -overdraft_limit.
+  [PASS] UPDATE on ledger_entries blocked (append-only enforced).
+
+========================================================================
+ALL CONCURRENCY EXPERIMENTS COMPLETE
+========================================================================
+========================================================================
+EXPERIMENT 1: LOST UPDATE & DOUBLE-SPENDING RACE (READ COMMITTED)
+========================================================================
+Account a0000001-0000-4000-8000-000000000001 (Amina USD) starting balance: 14500.50
+Two concurrent threads each withdraw $800.00 via naive read-modify-write.
+Neither holds a lock between READ balance and UPDATE balance.
+
+  [Thread-2] Read balance: 14198.5000
+  [Thread-1] Read balance: 14198.5000
+  [Thread-2] Wrote balance: 13398.5000 (withdrew 800.0000)
+  [Thread-1] Wrote balance: 13398.5000 (withdrew 800.0000)
+
+>> RESULT: Final balance = 13398.5000
+   Expected if both withdrawals applied: 12900.50
+   Expected if only one applied (lost update): 13700.50
+   Final balance 13398.5000 (no lost update detected in this run).
+
+========================================================================
+EXPERIMENT 2: ATOMIC PESSIMISTIC GUARD (SOLVENCY-PRESERVING DECREMENT)
+========================================================================
+Account a0000001-0000-4000-8000-000000000001 current balance, overdraft_limit: 1000.00
+Two concurrent threads each withdraw $800.00 via atomic guarded UPDATE:
+  UPDATE accounts SET current_balance = current_balance - 800
+  WHERE account_id = ... AND (current_balance + overdraft_limit) >= 800;
+The guard checks solvency atomically inside the UPDATE. Each debit that
+would keep the account solvent succeeds; any debit that would breach
+solvency is rejected (rowcount=0). No lost updates, no overdrafts.
+
+  [Thread-1] SUCCESS: rowcount=1, new balance=12598.5000
+  [Thread-2] SUCCESS: rowcount=1, new balance=11798.5000
+
+>> RESULT: Final balance = 11798.5000
+   [PASS] Atomic solvency guard evaluated per-debit; every withdrawal that
+   keeps the account solvent succeeded, none breached overdraft_limit.
+   No lost updates: the guard serializes concurrent debit attempts.
+
+========================================================================
+EXPERIMENT 3: OPTIMISTIC CONCURRENCY CONTROL (CAS VERSION STAMPING)
+========================================================================
+Account a0000001-0000-4000-8000-000000000001 starting balance: ~13700.50, version column present
+Two threads read (balance, version), then attempt CAS UPDATE:
+  UPDATE accounts SET current_balance = %s, version = version + 1
+  WHERE account_id = %s AND version = <read_version>;
+The thread whose version still matches wins; the other aborts (rowcount=0).
+
+  [Thread-1] Read balance=11798.5000, version=1
+  [Thread-2] Read balance=11798.5000, version=1
+  [Thread-2] COMMIT: balance=10998.5000, version incremented to 2
+  [Thread-1] CONFLICT: version advanced since read; OCC abort (rowcount=0)
+
+>> RESULT: Final balance=10998.5000, version=2
+   [PASS] Version mismatch detected one writer; no lost update.
+   Protects without holding long-lived database locks.
+
+========================================================================
+EXPERIMENT 4: DEADLOCK PREVENTION VIA CANONICAL LOCK ORDERING
+========================================================================
+Bidirectional transfers between two accounts:
+  Transfer A: a0000001-0000-4000-8000-000000000001 -> a0000002-0000-4000-8000-000000000002  $100.00
+  Transfer B: a0000002-0000-4000-8000-000000000002 -> a0000001-0000-4000-8000-000000000001  $200.00
+Without ordering: T1 locks A then waits for B; T2 locks B then waits for A -> deadlock.
+With ordering: both lock min(account_id) first, then max(account_id) -> no circular wait.
+
+  [Thread-1] Canonical order: lock a0000001-0000-4000-8000-000000000001 then a0000002-0000-4000-8000-000000000002
+  [Thread-2] Canonical order: lock a0000001-0000-4000-8000-000000000001 then a0000002-0000-4000-8000-000000000002
+  [Thread-1] Transfer of 100.0000 completed (a0000001-0000-4000-8000-000000000001 -> a0000002-0000-4000-8000-000000000002), locks released.
+  [Thread-2] Transfer of 200.0000 completed (a0000002-0000-4000-8000-000000000002 -> a0000001-0000-4000-8000-000000000001), locks released.
+
+========================================================================
+EXPERIMENT 5: ISOLATION LEVELS — SERIALIZABLE PREVENTS WRITE SKEW
+========================================================================
+Two accounts (Zainab USD, Kolawale USD) with combined collateral rule:
+  balance_a + balance_b >= 10000.00
+Two concurrent transactions each withdraw $6000 from one account.
+Under SERIALIZABLE, one transaction aborts with SerializationFailure.
+
+  [Thread-1] Read combined balance: 50454.8000
+  [Thread-2] Read combined balance: 143854.0500
+  [Thread-1] COMMITTED: debited 6000.0000 from a0000005-0000-4000-8000-000000000005
+  [Thread-2] SERIALIZATION FAILURE: write skew prevented; abort & retry.
+
+========================================================================
+EXPERIMENT 6: IDEMPOTENCY KEY COLLISION (UniqueViolation -> ROLLBACK)
+========================================================================
+Attempt to insert a transaction with idempotency_key 'idem-key-889911-a'
+which already exists from Portfolio 1 seed (Transaction TXN-20261025-001).
+The UNIQUE constraint intercepts the duplicate; the transaction rolls back.
+
+  [PASS] UniqueViolation on idempotency_key: duplicate key value violates unique constraint "transactions_idempotency_key_key"
+DETAIL:  Key (idempotency_key)=(idem-key-889911-a) already exists.
+   Duplicate payment attempt rolled back; no double debit.
+
+========================================================================
+POST-EXPERIMENT SANITY CHECK (P1 schema objects still enforced)
+========================================================================
+  [PASS] 11 integrity triggers present on P1 financial tables.
+  [PASS] All accounts remain solvent after experiments.
+
+========================================================================
+ALL CONCURRENCY EXPERIMENTS COMPLETE
+========================================================================

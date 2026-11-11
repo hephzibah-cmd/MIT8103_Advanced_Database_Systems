@@ -90,6 +90,7 @@ CREATE TABLE accounts (
     current_balance NUMERIC(18, 4) NOT NULL DEFAULT 0.0000,
     hold_balance NUMERIC(18, 4) NOT NULL DEFAULT 0.0000,
     overdraft_limit NUMERIC(18, 4) NOT NULL DEFAULT 0.0000,
+    version INTEGER NOT NULL DEFAULT 1,
     account_status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
         CHECK (account_status IN ('ACTIVE', 'DORMANT', 'FROZEN', 'CLOSED')),
     opened_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
