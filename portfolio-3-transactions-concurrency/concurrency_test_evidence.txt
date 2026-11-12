@@ -1,111 +1,202 @@
 ========================================================================
-POST-RUN INVARIANT ASSERTIONS (Portfolio 1 enforcement still intact)
+ACID TRANSACTION SCRIPTS (transactions.sql): COMMIT / ROLLBACK / SAVEPOINT
+========================================================================
+  [OK -> COMMIT] TRANSACTION 1: Successful Atomic P2P Transfer with Double-Entry Bookkeeping
+  [OK -> ROLLBACK] TRANSACTION 2: Insufficient Funds Failure Triggering Complete ROLLBACK
+  [UniqueViolation -> ROLLBACK] TRANSACTION 3: Duplicate Request / Idempotency Collision with Abort
+      server error: duplicate key value violates unique constraint "transactions_idempotency_key_key"
+  [CheckViolation -> ROLLBACK] TRANSACTION 4: Constraint-Enforced ROLLBACK of a Partially Posted Journal
+      server error: new row for relation "accounts" violates check constraint "chk_account_holds"
+  [OK -> COMMIT] TRANSACTION 5: Partial Rollback with SAVEPOINT / ROLLBACK TO SAVEPOINT
+
+Post-script verification:
+  [PASS] Amina a0000001 balance (T1 -302.00, T5 +50.00): 14248.5000 (expected 14248.5000)
+  [PASS] Chidi a0000002 balance (T1 +300.00, T5 -50.00, cashback undone): 8500.0000 (expected 8500.0000)
+  [PASS] Treasury a0000008 balance (T1 +2.00, cashback undone): 18454.0500 (expected 18454.0500)
+  [PASS] David a0000004 balance (T2, T4 rolled back): 45000.0000 (expected 45000.0000)
+  [PASS] T1 journal committed: 1 (expected 1)
+  [PASS] T3 duplicate idempotency key rows: 1 (expected 1)
+  [PASS] T4 journal header discarded with failed lines: 0 (expected 0)
+  [PASS] T5 main journal kept: 1 (expected 1)
+  [PASS] T5 cashback journal undone by ROLLBACK TO SAVEPOINT: 0 (expected 0)
+
+========================================================================
+PRE-RUN INVARIANT ASSERTIONS (Portfolio 1 enforcement)
 ========================================================================
   [PASS] All journals balanced: SUM(debits) = SUM(credits) per journal.
-  [PASS] current_balance == latest balance_after for all accounts.
+  [PASS] current_balance == latest balance_after for all posted accounts.
   [PASS] All accounts solvent: current_balance >= -overdraft_limit.
   [PASS] UPDATE on ledger_entries blocked (append-only enforced).
+  [INFO] 6 distinct integrity triggers on P1 financial tables.
 
 ========================================================================
-ALL CONCURRENCY EXPERIMENTS COMPLETE
+EXPERIMENT 1: LOST UPDATE - READ COMMITTED vs REPEATABLE READ
 ========================================================================
-========================================================================
-EXPERIMENT 1: LOST UPDATE & DOUBLE-SPENDING RACE (READ COMMITTED)
-========================================================================
-Account a0000001-0000-4000-8000-000000000001 (Amina USD) starting balance: 14500.50
-Two concurrent threads each withdraw $800.00 via naive read-modify-write.
-Neither holds a lock between READ balance and UPDATE balance.
+Account a0000001-0000-4000-8000-000000000001 (Amina USD) starting balance: 14248.5000
+Two concurrent sessions each withdraw 800.0000 via naive read-modify-write:
+  SELECT current_balance ...;  -- application computes balance - amount
+  UPDATE accounts SET current_balance = <computed value> ...;
+A barrier guarantees both sessions READ before either WRITES.
 
-  [Thread-2] Read balance: 14198.5000
-  [Thread-1] Read balance: 14198.5000
-  [Thread-2] Wrote balance: 13398.5000 (withdrew 800.0000)
-  [Thread-1] Wrote balance: 13398.5000 (withdrew 800.0000)
+--- 1a: READ COMMITTED ---
+  [Thread-1] attempt 1: read balance 14248.5000
+  [Thread-2] attempt 1: read balance 14248.5000
+  [Thread-1] attempt 1: COMMIT, wrote balance 13448.5000
+  [Thread-2] attempt 1: COMMIT, wrote balance 13448.5000
+>> RESULT (READ COMMITTED): final balance = 13448.5000
+   Correct (both withdrawals applied): 12648.5000
+   [ANOMALY CONFIRMED] Lost update: one 800.0000 debit was overwritten;
+   800.0000 was paid out but never deducted from the account.
+   (touched accounts restored to their pre-experiment state)
 
->> RESULT: Final balance = 13398.5000
-   Expected if both withdrawals applied: 12900.50
-   Expected if only one applied (lost update): 13700.50
-   Final balance 13398.5000 (no lost update detected in this run).
+--- 1b: REPEATABLE READ ---
+  [Thread-1] attempt 1: read balance 14248.5000
+  [Thread-2] attempt 1: read balance 14248.5000
+  [Thread-2] attempt 1: COMMIT, wrote balance 13448.5000
+  [Thread-1] attempt 1: SQLSTATE 40001 SerializationFailure ('could not serialize access due to concurrent update') -> ROLLBACK, retry
+  [Thread-1] attempt 2: read balance 13448.5000
+  [Thread-1] attempt 2: COMMIT, wrote balance 12648.5000
+>> RESULT (REPEATABLE READ): final balance = 12648.5000
+   Correct (both withdrawals applied): 12648.5000
+   [PASS] No lost update: the stale writer was aborted with SQLSTATE 40001
+   (first-updater-wins under snapshot isolation) and its retry re-read
+   the committed balance.
+   (touched accounts restored to their pre-experiment state)
 
 ========================================================================
 EXPERIMENT 2: ATOMIC PESSIMISTIC GUARD (SOLVENCY-PRESERVING DECREMENT)
 ========================================================================
-Account a0000001-0000-4000-8000-000000000001 current balance, overdraft_limit: 1000.00
-Two concurrent threads each withdraw $800.00 via atomic guarded UPDATE:
-  UPDATE accounts SET current_balance = current_balance - 800
-  WHERE account_id = ... AND (current_balance + overdraft_limit) >= 800;
-The guard checks solvency atomically inside the UPDATE. Each debit that
-would keep the account solvent succeeds; any debit that would breach
-solvency is rejected (rowcount=0). No lost updates, no overdrafts.
+Account a0000001-0000-4000-8000-000000000001 balance 14248.5000, overdraft_limit 1000.00 -> spendable 15248.5000
+Two concurrent sessions (READ COMMITTED) each try to withdraw 9000.0000;
+one fits, two do not. Each runs a single guarded UPDATE:
+  UPDATE accounts SET current_balance = current_balance - :amount
+  WHERE account_id = :id AND (current_balance + overdraft_limit) >= :amount;
+Each session holds its row lock ~0.3s before COMMIT so the other must wait.
 
-  [Thread-1] SUCCESS: rowcount=1, new balance=12598.5000
-  [Thread-2] SUCCESS: rowcount=1, new balance=11798.5000
+  [Thread-2] SUCCESS: rowcount=1, new balance=5248.5000 (UPDATE waited 1 ms)
+  [Thread-1] REJECTED: rowcount=0 - blocked 305 ms on the row lock, then re-evaluated the guard against the committed row
 
->> RESULT: Final balance = 11798.5000
-   [PASS] Atomic solvency guard evaluated per-debit; every withdrawal that
-   keeps the account solvent succeeded, none breached overdraft_limit.
-   No lost updates: the guard serializes concurrent debit attempts.
+>> RESULT: Final balance = 5248.5000 (expected 5248.5000)
+   [PASS] Exactly one debit applied; the second was rejected by the guard
+   (READ COMMITTED re-checks the WHERE clause on the newest row version
+   after the lock wait). No lost update, no overdraft breach.
+   (touched accounts restored to their pre-experiment state)
 
 ========================================================================
 EXPERIMENT 3: OPTIMISTIC CONCURRENCY CONTROL (CAS VERSION STAMPING)
 ========================================================================
-Account a0000001-0000-4000-8000-000000000001 starting balance: ~13700.50, version column present
-Two threads read (balance, version), then attempt CAS UPDATE:
-  UPDATE accounts SET current_balance = %s, version = version + 1
-  WHERE account_id = %s AND version = <read_version>;
-The thread whose version still matches wins; the other aborts (rowcount=0).
+Account a0000001-0000-4000-8000-000000000001 starting balance 14248.5000, version 1
+Two sessions read (balance, version), meet at a barrier, then CAS:
+  UPDATE accounts SET current_balance = :new, version = version + 1
+  WHERE account_id = :id AND version = :read_version;
+rowcount=0 means the version moved: the loser re-reads and retries.
 
-  [Thread-1] Read balance=11798.5000, version=1
-  [Thread-2] Read balance=11798.5000, version=1
-  [Thread-2] COMMIT: balance=10998.5000, version incremented to 2
-  [Thread-1] CONFLICT: version advanced since read; OCC abort (rowcount=0)
+  [Thread-1] attempt 1: read balance=14248.5000, version=1
+  [Thread-2] attempt 1: read balance=14248.5000, version=1
+  [Thread-2] attempt 1: COMMIT balance=13448.5000, version 1 -> 2
+  [Thread-1] attempt 1: CONFLICT (rowcount=0, version moved) -> retry
+  [Thread-1] attempt 2: read balance=13448.5000, version=2
+  [Thread-1] attempt 2: COMMIT balance=12648.5000, version 2 -> 3
 
->> RESULT: Final balance=10998.5000, version=2
-   [PASS] Version mismatch detected one writer; no lost update.
-   Protects without holding long-lived database locks.
+>> RESULT: Final balance=12648.5000, version=3 (expected 12648.5000, version 3)
+   [PASS] Stale CAS rejected, retry applied on fresh state: both debits
+   counted, no lost update, no lock held between read and write.
+   (touched accounts restored to their pre-experiment state)
 
 ========================================================================
-EXPERIMENT 4: DEADLOCK PREVENTION VIA CANONICAL LOCK ORDERING
+EXPERIMENT 4: DEADLOCK - DETECTION (40P01) vs PREVENTION (LOCK ORDERING)
 ========================================================================
 Bidirectional transfers between two accounts:
-  Transfer A: a0000001-0000-4000-8000-000000000001 -> a0000002-0000-4000-8000-000000000002  $100.00
-  Transfer B: a0000002-0000-4000-8000-000000000002 -> a0000001-0000-4000-8000-000000000001  $200.00
-Without ordering: T1 locks A then waits for B; T2 locks B then waits for A -> deadlock.
-With ordering: both lock min(account_id) first, then max(account_id) -> no circular wait.
+  Transfer A: Amina a0000001-0000-4000-8000-000000000001 -> Chidi a0000002-0000-4000-8000-000000000002  $100.00
+  Transfer B: Chidi a0000002-0000-4000-8000-000000000002 -> Amina a0000001-0000-4000-8000-000000000001  $200.00
+Each transfer locks both rows with SELECT ... FOR UPDATE, then debits/credits.
+A barrier makes both sessions hold their FIRST lock before requesting the second.
 
-  [Thread-1] Canonical order: lock a0000001-0000-4000-8000-000000000001 then a0000002-0000-4000-8000-000000000002
-  [Thread-2] Canonical order: lock a0000001-0000-4000-8000-000000000001 then a0000002-0000-4000-8000-000000000002
-  [Thread-1] Transfer of 100.0000 completed (a0000001-0000-4000-8000-000000000001 -> a0000002-0000-4000-8000-000000000002), locks released.
-  [Thread-2] Transfer of 200.0000 completed (a0000002-0000-4000-8000-000000000002 -> a0000001-0000-4000-8000-000000000001), locks released.
+--- 4a: UNORDERED (source first, then destination) ---
+  [Thread-2] attempt 1: locked a0000002
+  [Thread-1] attempt 1: locked a0000001
+  [Thread-2] attempt 1: locked a0000001
+  [Thread-1] attempt 1: SQLSTATE 40P01 DeadlockDetected - chosen as victim, ROLLBACK, retry
+  [Thread-2] attempt 1: COMMIT transfer 200.0000 a0000002 -> a0000001, locks released
+  [Thread-1] attempt 2: locked a0000001
+  [Thread-1] attempt 2: locked a0000002
+  [Thread-1] attempt 2: COMMIT transfer 100.0000 a0000001 -> a0000002, locks released
+>> RESULT: deadlocks=1, Amina net change 100.0000 (expected +100.0000), combined balance 22748.5000 (expected 22748.5000)
+   [PASS] PostgreSQL's wait-for-graph check (after deadlock_timeout) aborted
+   one victim with 40P01; the survivor committed and the victim's retry
+   succeeded. Detection resolves deadlocks, but costs ~1s and an abort.
+   (touched accounts restored to their pre-experiment state)
 
-========================================================================
-EXPERIMENT 5: ISOLATION LEVELS — SERIALIZABLE PREVENTS WRITE SKEW
-========================================================================
-Two accounts (Zainab USD, Kolawale USD) with combined collateral rule:
-  balance_a + balance_b >= 10000.00
-Two concurrent transactions each withdraw $6000 from one account.
-Under SERIALIZABLE, one transaction aborts with SerializationFailure.
-
-  [Thread-1] Read combined balance: 50454.8000
-  [Thread-2] Read combined balance: 143854.0500
-  [Thread-1] COMMITTED: debited 6000.0000 from a0000005-0000-4000-8000-000000000005
-  [Thread-2] SERIALIZATION FAILURE: write skew prevented; abort & retry.
-
-========================================================================
-EXPERIMENT 6: IDEMPOTENCY KEY COLLISION (UniqueViolation -> ROLLBACK)
-========================================================================
-Attempt to insert a transaction with idempotency_key 'idem-key-889911-a'
-which already exists from Portfolio 1 seed (Transaction TXN-20261025-001).
-The UNIQUE constraint intercepts the duplicate; the transaction rolls back.
-
-  [PASS] UniqueViolation on idempotency_key: duplicate key value violates unique constraint "transactions_idempotency_key_key"
-DETAIL:  Key (idempotency_key)=(idem-key-889911-a) already exists.
-   Duplicate payment attempt rolled back; no double debit.
+--- 4b: CANONICAL ORDER (min id, then max id) ---
+  [Thread-1] attempt 1: locked a0000001
+  [Thread-1] attempt 1: locked a0000002
+  [Thread-1] attempt 1: COMMIT transfer 100.0000 a0000001 -> a0000002, locks released
+  [Thread-2] attempt 1: locked a0000001
+  [Thread-2] attempt 1: locked a0000002
+  [Thread-2] attempt 1: COMMIT transfer 200.0000 a0000002 -> a0000001, locks released
+>> RESULT: deadlocks=0, Amina net change 100.0000 (expected +100.0000), combined balance 22748.5000 (expected 22748.5000)
+   [PASS] Canonical ordering removed the circular wait: zero deadlocks,
+   the second session simply queued behind the first.
+   (touched accounts restored to their pre-experiment state)
 
 ========================================================================
-POST-EXPERIMENT SANITY CHECK (P1 schema objects still enforced)
+EXPERIMENT 5: WRITE SKEW - REPEATABLE READ vs SERIALIZABLE (SSI)
 ========================================================================
-  [PASS] 11 integrity triggers present on P1 financial tables.
-  [PASS] All accounts remain solvent after experiments.
+Zainab (a0000005) and Kolawole (a0000006) are a guarantor pair under a
+combined-collateral rule: balance_zainab + balance_kolawole >= 150000.0000
+Starting combined balance: 157400.7500
+Each session reads BOTH balances, checks the rule for a 6000.0000 withdrawal,
+then debits ONLY its own account (disjoint write sets, so no row conflict).
+One withdrawal is fine (151400.7500); both breach the rule (145400.7500).
+
+--- 5a: REPEATABLE READ ---
+  [Thread-1] attempt 1: read combined balance 157400.7500
+  [Thread-2] attempt 1: read combined balance 157400.7500
+  [Thread-2] attempt 1: COMMIT, debited 6000.0000 from a0000006
+  [Thread-1] attempt 1: COMMIT, debited 6000.0000 from a0000005
+>> RESULT (REPEATABLE READ): combined balance = 145400.7500 (rule >= 150000.0000)
+   [ANOMALY CONFIRMED] Write skew: each snapshot saw a valid state, both
+   committed, and the combined-collateral rule is now violated.
+   (touched accounts restored to their pre-experiment state)
+
+--- 5b: SERIALIZABLE ---
+  [Thread-2] attempt 1: read combined balance 157400.7500
+  [Thread-1] attempt 1: read combined balance 157400.7500
+  [Thread-2] attempt 1: SQLSTATE 40001 SerializationFailure ('could not serialize access due to read/write dependencies among transactions') -> ROLLBACK, retry
+  [Thread-1] attempt 1: COMMIT, debited 6000.0000 from a0000005
+  [Thread-2] attempt 2: read combined balance 151400.7500
+  [Thread-2] attempt 2: rule would be breached -> withdrawal declined
+>> RESULT (SERIALIZABLE): combined balance = 151400.7500 (rule >= 150000.0000)
+   [PASS] Rule preserved: SSI detected the rw-dependency cycle, aborted one
+   session with 40001, and its retry saw the other's debit and declined.
+   (touched accounts restored to their pre-experiment state)
+
+========================================================================
+EXPERIMENT 6: IDEMPOTENCY KEY (UNIQUE INDEX AS A CONCURRENCY CONTROL)
+========================================================================
+6a: two sessions submit the SAME payment request (idempotency_key 'idem-p3-concurrent-001')
+    at the same instant, e.g. a mobile client double-tap. Each holds its
+    INSERT open ~0.3s before COMMIT.
+
+  [Thread-2] COMMIT: payment P3-IDEM-CONCURRENT-B accepted
+  [Thread-1] UniqueViolation after waiting 307 ms on the uncommitted duplicate -> ROLLBACK (duplicate rejected)
+>> RESULT: rows with key 'idem-p3-concurrent-001' = 1 (expected 1)
+   [PASS] The unique index serialised the two inserts: the second waited for
+   the first to commit, then failed - exactly one payment exists.
+
+6b: client replays an already-settled request (key 'idem-key-889911-a',
+    seeded P1 transaction TXN-20261025-001).
+  [PASS] UniqueViolation (SQLSTATE 23505): duplicate key value violates unique constraint "transactions_idempotency_key_key"
+   Replay rolled back; the application returns the original result instead.
+
+========================================================================
+POST-RUN INVARIANT ASSERTIONS (Portfolio 1 enforcement)
+========================================================================
+  [PASS] All journals balanced: SUM(debits) = SUM(credits) per journal.
+  [PASS] current_balance == latest balance_after for all posted accounts.
+  [PASS] All accounts solvent: current_balance >= -overdraft_limit.
+  [PASS] UPDATE on ledger_entries blocked (append-only enforced).
+  [INFO] 6 distinct integrity triggers on P1 financial tables.
 
 ========================================================================
 ALL CONCURRENCY EXPERIMENTS COMPLETE
