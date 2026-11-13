@@ -16,7 +16,7 @@ Environment:
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -410,19 +410,25 @@ def seed_transactions(transactions_coll):
 
 
 def seed_kv(kv_coll):
-    """Key-value store: idempotency cache, sessions, rate limits."""
+    """Key-value store: idempotency cache, sessions, rate limits.
+
+    expire_at must be a BSON date for the TTL index; it is computed relative
+    to the run time (24h / 30m / 60s) so live keys are not already expired.
+    The TTL monitor only sweeps every ~60s, so reads also filter on expire_at.
+    """
+    now = datetime.now(timezone.utc)
     docs = [
         {
             "_key": "idem:idem-key-889911-a",
             "value": {"transaction_id": "30000001-0000-4000-8000-000000000001"},
             "kind": "idempotency",
-            "expire_at": datetime(2026, 10, 26, 10, 14, 1, tzinfo=timezone.utc),
+            "expire_at": now + timedelta(hours=24),
         },
         {
             "_key": "idem:idem-key-991122-b",
             "value": {"transaction_id": "30000002-0000-4000-8000-000000000002"},
             "kind": "idempotency",
-            "expire_at": datetime(2026, 10, 27, 14, 30, 2, tzinfo=timezone.utc),
+            "expire_at": now + timedelta(hours=24),
         },
         {
             "_key": "sess:sess_abc123",
@@ -431,19 +437,19 @@ def seed_kv(kv_coll):
                 "channel": "MOBILE_APP",
             },
             "kind": "session",
-            "expire_at": datetime(2026, 10, 25, 11, 14, 1, tzinfo=timezone.utc),
+            "expire_at": now + timedelta(minutes=30),
         },
         {
             "_key": "ratelimit:c0000001-0000-4000-8000-000000000001",
             "value": {"count": 7},
             "kind": "rate_limit",
-            "expire_at": datetime(2026, 10, 25, 10, 15, 1, tzinfo=timezone.utc),
+            "expire_at": now + timedelta(seconds=60),
         },
         {
             "_key": "card_lock:f0000001-0000-4000-8000-000000000001",
             "value": {"locked": False},
             "kind": "card_lock",
-            "expire_at": None,
+            "expire_at": None,  # non-date value -> never expired by TTL monitor
         },
     ]
     kv_coll.insert_many([to_mongo(d) for d in docs], ordered=False)
@@ -525,21 +531,38 @@ def run_kv_operations(db):
 
     kv = db["kv_store"]
     kv.create_index([("expire_at", ASCENDING)], expireAfterSeconds=0, name="idx_ttl")
+    now = datetime.now(timezone.utc)
+    live = {"$or": [{"expire_at": {"$gt": now}}, {"expire_at": None}]}
 
     # KV1: Idempotency check — get by key
     log()
     log("KV1: Idempotency key lookup (get by key)")
-    entry = kv.find_one({"_key": "idem:idem-key-889911-a"}, {"_id": 0})
+    entry = kv.find_one({"_key": "idem:idem-key-889911-a", **live}, {"_id": 0, "expire_at": 0})
     log(f"  {entry}")
-    if entry:
-        log("  [PASS] Idempotency key found -> duplicate payment would be rejected.")
+    status = "PASS" if entry else "FAIL"
+    log(f"  [{status}] Live idempotency key found -> duplicate payment would be rejected.")
+
+    # KV1b: Idempotent SET-if-absent — unique index rejects a retried payment
+    log()
+    log("KV1b: Retry with same idempotency key (insert-if-absent on unique _key)")
+    try:
+        kv.insert_one({
+            "_key": "idem:idem-key-889911-a",
+            "value": {"transaction_id": "30000099-0000-4000-8000-000000000099"},
+            "kind": "idempotency",
+            "expire_at": now + timedelta(hours=24),
+        })
+        log("  [FAIL] Duplicate idempotency key was accepted.")
+    except DuplicateKeyError:
+        log("  [PASS] DuplicateKeyError raised -> retried payment rejected, original transaction_id returned.")
 
     # KV2: Session get
     log()
     log("KV2: Session token lookup")
-    entry = kv.find_one({"_key": "sess:sess_abc123", "kind": "session"}, {"_id": 0})
+    entry = kv.find_one({"_key": "sess:sess_abc123", "kind": "session", **live}, {"_id": 0, "expire_at": 0})
     log(f"  {entry}")
-    log("  [PASS] Session retrieved by token key.")
+    status = "PASS" if entry else "FAIL"
+    log(f"  [{status}] Session retrieved by token key.")
 
     # KV3: Rate-limit increment (atomic $inc)
     log()
