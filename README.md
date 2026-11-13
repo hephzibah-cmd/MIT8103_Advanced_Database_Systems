@@ -11,8 +11,8 @@ This repository contains the practical portfolio activities for MIT8103. All act
 | Folder | Status | Focus |
 | :--- | :--- | :--- |
 | [`portfolio-1-database-design/`](portfolio-1-database-design/) | Complete | ER model, relational schema, normalisation, PostgreSQL DDL, seed data, integrity and PCI DSS verification. |
-| [`portfolio-2-query-optimisation/`](portfolio-2-query-optimisation/) | Pending | SQL queries, execution plans, indexing, and performance analysis. |
-| [`portfolio-3-transactions-concurrency/`](portfolio-3-transactions-concurrency/) | Complete | ACID transaction scripts, multithreaded concurrency experiments (lost update, atomic pessimistic guard, OCC, deadlock prevention, SERIALIZABLE write-skew, idempotency), P1 invariant assertions, PostgreSQL 16 evidence. |
+| [`portfolio-2-query-optimisation/`](portfolio-2-query-optimisation/) | Complete | Analytical SQL queries, EXPLAIN (ANALYZE, BUFFERS) plans, baseline vs composite vs covering index experiments on a 50k-transaction dataset, cost-model and performance analysis. |
+| [`portfolio-3-transactions-concurrency/`](portfolio-3-transactions-concurrency/) | Complete | ACID transaction scripts (commit, rollback, savepoints), multithreaded concurrency experiments (lost update at READ COMMITTED vs REPEATABLE READ, atomic pessimistic guard, OCC, deadlock detection vs ordered locking, write skew at REPEATABLE READ vs SERIALIZABLE, idempotency), pre/post-run P1 invariant assertions, PostgreSQL 16 evidence. |
 | [`portfolio-4-nosql/`](portfolio-4-nosql/) | Complete | NoSQL model (MongoDB document store): customer profiles, accounts with embedded cards, transactions with embedded ledger lines, key-value idempotency/session/rate-limit store; column-family and graph designs documented. |
 | [`portfolio-5-distributed-cloud/`](portfolio-5-distributed-cloud/) | Pending | Replication, sharding, availability, consistency, and deployment. |
 
@@ -60,7 +60,8 @@ PowerShell equivalent: `$env:DATABASE_URL="postgresql://apexbank:apexbank_dev@lo
 
 ## Portfolio 1 Highlights
 
-- 11 normalised relations in BCNF with primary, alternate, and foreign keys.
+- 11 relations normalised to 3NF/BCNF with primary, alternate, and foreign keys; deliberate, trigger-guarded denormalisations (stored balances, `balance_after`, `transactions.currency_code`) are justified in the normalisation analysis.
+- Append-only `audit_logs`; closed accounts must have zero balance; settled/reversed transactions must reference a journal; journals must be single-currency.
 - Deferred PL/pgSQL constraint triggers enforce double-entry balance at commit.
 - Append-only triggers prevent updates or deletes on financial history.
 - Ledger postings maintain account balances and validate `balance_after`.
