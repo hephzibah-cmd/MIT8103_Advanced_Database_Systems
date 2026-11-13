@@ -21,6 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pymongo
+from bson.decimal128 import Decimal128
 from pymongo import ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
 
@@ -43,9 +44,10 @@ def log(msg=""):
 
 
 def to_mongo(value):
-    """Recursively convert Decimal -> float for BSON compatibility."""
+    """Recursively convert Decimal -> BSON Decimal128 (exact base-10 money,
+    mirroring P1 NUMERIC(18,4); binary float would introduce rounding error)."""
     if isinstance(value, Decimal):
-        return float(value)
+        return Decimal128(value)
     if isinstance(value, dict):
         return {k: to_mongo(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -146,6 +148,36 @@ def seed_customers(customers_coll):
             "updated_at": "2026-01-20T16:45:00+01:00",
         },
         {
+            "customer_id": "c0000006-0000-4000-8000-000000000006",
+            "first_name": "Kolawole",
+            "last_name": "Balogun",
+            "email": "kola.balogun@example.com",
+            "phone_number": "+2348123456789",
+            "tier_level": "TIER_3",
+            "status": "ACTIVE",
+            "kyc": {
+                "kyc_id": "d0000005-0000-4000-8000-000000000005",
+                "document_type": "NATIONAL_ID",
+                "id_number": "NIN-8877665544",
+                "verification_status": "VERIFIED",
+                "verified_at": "2026-02-18T10:00:00+01:00",
+            },
+            "created_at": "2026-01-15T08:00:00+01:00",
+            "updated_at": "2026-02-18T10:00:00+01:00",
+        },
+        {
+            "customer_id": "c0000007-0000-4000-8000-000000000007",
+            "first_name": "Ngozi",
+            "last_name": "Eze",
+            "email": "ngozi.eze@example.com",
+            "phone_number": "+2348098765432",
+            "tier_level": "TIER_2",
+            "status": "ACTIVE",
+            "kyc": None,
+            "created_at": "2026-01-16T08:00:00+01:00",
+            "updated_at": "2026-01-16T08:00:00+01:00",
+        },
+        {
             "customer_id": "c0000008-0000-4000-8000-000000000008",
             "first_name": "ApexBank",
             "last_name": "Internal Treasury",
@@ -162,7 +194,7 @@ def seed_customers(customers_coll):
     log(f"  [OK] Inserted {len(docs)} customer documents")
 
 
-def seed_accounts(accounts_coll, cards_coll):
+def seed_accounts(accounts_coll):
     docs = [
         {
             "account_id": "a0000001-0000-4000-8000-000000000001",
@@ -306,6 +338,7 @@ def seed_transactions(transactions_coll):
             "idempotency_key": "idem-key-889911-a",
             "source_account_id": "a0000001-0000-4000-8000-000000000001",
             "destination_account_id": "a0000002-0000-4000-8000-000000000002",
+            "merchant_id": None,
             "journal_id": "10000001-0000-4000-8000-000000000001",
             "currency_code": "USD",
             "amount": Decimal("500.0000"),
@@ -341,6 +374,7 @@ def seed_transactions(transactions_coll):
             "idempotency_key": "idem-key-991122-b",
             "source_account_id": "a0000005-0000-4000-8000-000000000005",
             "destination_account_id": "a0000006-0000-4000-8000-000000000006",
+            "merchant_id": "e0000001-0000-4000-8000-000000000001",
             "journal_id": "10000002-0000-4000-8000-000000000002",
             "currency_code": "USD",
             "amount": Decimal("120.0000"),
@@ -474,7 +508,7 @@ def run_document_queries(db):
     log("Q5: Aggregation — sum of debit amounts per account (unwind embedded ledger_lines)")
     pipeline = [
         {"$unwind": "$ledger_lines"},
-        {"$group": {"_id": "$ledger_lines.account_id", "total_debit": {"$sum": {"$cond": [{"$eq": ["$ledger_lines.entry_type", "DEBIT"]}, "$ledger_lines.amount", 0]}}}},
+        {"$group": {"_id": "$ledger_lines.account_id", "total_debit": {"$sum": {"$cond": [{"$eq": ["$ledger_lines.entry_type", "DEBIT"]}, "$ledger_lines.amount", Decimal128("0.0000")]}}}},
         {"$sort": {"_id": ASCENDING}},
     ]
     results = list(transactions.aggregate(pipeline))
@@ -549,7 +583,7 @@ def assert_invariants(db):
     transactions = db["transactions"]
 
     # All expected customers present
-    expected_customers = 6
+    expected_customers = 8
     actual = customers.count_documents({})
     status = "PASS" if actual == expected_customers else "FAIL"
     log(f"  [{status}] Customer documents: {actual} (expected {expected_customers})")
@@ -601,7 +635,7 @@ def main():
     log()
     log("Seeding ApexBank document data ...")
     seed_customers(customers)
-    seed_accounts(accounts, None)
+    seed_accounts(accounts)
     seed_transactions(transactions)
     seed_kv(kv)
 
