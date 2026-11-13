@@ -1,0 +1,147 @@
+# DEV-ONLY credentials: all passwords in this file, primary-init.sql and
+# userlist.txt are throwaway lab values. In a real deployment they would come
+# from a secrets manager (Docker/K8s secrets, AWS Secrets Manager, Vault).
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Primary (leader) — accepts writes, streams WAL to replicas
+  # ---------------------------------------------------------------------------
+  postgres-primary:
+    image: postgres:16
+    container_name: mit8103-pg-primary
+    environment:
+      POSTGRES_USER: apexbank
+      POSTGRES_PASSWORD: apexbank_dev
+      POSTGRES_DB: apexbank
+    ports:
+      - "5435:5432"
+    volumes:
+      - apexbank_primary_pgdata:/var/lib/postgresql/data
+      - ./primary-postgres.conf:/etc/postgresql/postgresql.conf:ro
+      - ./primary-init-replication-hba.sh:/docker-entrypoint-initdb.d/00-replication-hba.sh:ro
+      - ./primary-init.sql:/docker-entrypoint-initdb.d/01-primary-init.sql:ro
+      - ./ddl_schema.sql:/tmp/ddl_schema.sql:ro
+      - ./seed_data.sql:/tmp/seed_data.sql:ro
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apexbank -d apexbank"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - apexbank-distributed
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Read Replica 1 — streams WAL from primary, read-only
+  # ---------------------------------------------------------------------------
+  postgres-replica-1:
+    image: postgres:16
+    container_name: mit8103-pg-replica-1
+    # The replica is NOT initdb'd: on first start (empty data dir) it clones
+    # the primary with pg_basebackup -R (writes standby.signal +
+    # primary_conninfo) using its pre-created physical slot, then starts as a
+    # hot standby. Retries until the primary has finished its init scripts.
+    user: postgres
+    environment:
+      PGPASSWORD: replicator_dev
+    ports:
+      - "5436:5432"
+    volumes:
+      - apexbank_replica1_pgdata:/var/lib/postgresql/data
+      - ./replica-postgres.conf:/etc/postgresql/postgresql.conf:ro
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        set -e
+        PGDATA=/var/lib/postgresql/data
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          until pg_basebackup -d "host=postgres-primary port=5432 user=replicator application_name=replica_1"                 -D "$$PGDATA" -X stream -R -S replica_1_slot; do
+            echo "waiting for primary / replica_1_slot ..."; rm -rf "$$PGDATA"/*; sleep 3
+          done
+        fi
+        chmod 0700 "$$PGDATA"
+        exec postgres -D "$$PGDATA" -c config_file=/etc/postgresql/postgresql.conf
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apexbank -d apexbank"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - apexbank-distributed
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Read Replica 2 — streams WAL from primary, read-only
+  # ---------------------------------------------------------------------------
+  postgres-replica-2:
+    image: postgres:16
+    container_name: mit8103-pg-replica-2
+    # The replica is NOT initdb'd: on first start (empty data dir) it clones
+    # the primary with pg_basebackup -R (writes standby.signal +
+    # primary_conninfo) using its pre-created physical slot, then starts as a
+    # hot standby. Retries until the primary has finished its init scripts.
+    user: postgres
+    environment:
+      PGPASSWORD: replicator_dev
+    ports:
+      - "5437:5432"
+    volumes:
+      - apexbank_replica2_pgdata:/var/lib/postgresql/data
+      - ./replica-postgres.conf:/etc/postgresql/postgresql.conf:ro
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        set -e
+        PGDATA=/var/lib/postgresql/data
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          until pg_basebackup -d "host=postgres-primary port=5432 user=replicator application_name=replica_2"                 -D "$$PGDATA" -X stream -R -S replica_2_slot; do
+            echo "waiting for primary / replica_2_slot ..."; rm -rf "$$PGDATA"/*; sleep 3
+          done
+        fi
+        chmod 0700 "$$PGDATA"
+        exec postgres -D "$$PGDATA" -c config_file=/etc/postgresql/postgresql.conf
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apexbank -d apexbank"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - apexbank-distributed
+
+  # ---------------------------------------------------------------------------
+  # pgBouncer — connection pooler / load balancer in front of primary + replicas
+  # ---------------------------------------------------------------------------
+  pgbouncer:
+    image: pgbouncer/pgbouncer:1.22
+    container_name: mit8103-pgbouncer
+    ports:
+      - "6432:6432"
+    # Paths are relative to this compose file. The image's default entrypoint
+    # regenerates pgbouncer.ini from env vars, so run pgbouncer directly
+    # against the mounted config instead.
+    entrypoint: ["/opt/pgbouncer/pgbouncer", "/etc/pgbouncer/pgbouncer.ini"]
+    volumes:
+      - ./pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica-1:
+        condition: service_healthy
+      postgres-replica-2:
+        condition: service_healthy
+    networks:
+      - apexbank-distributed
+
+volumes:
+  apexbank_primary_pgdata:
+  apexbank_replica1_pgdata:
+  apexbank_replica2_pgdata:
+
+networks:
+  apexbank-distributed:
+    driver: bridge
