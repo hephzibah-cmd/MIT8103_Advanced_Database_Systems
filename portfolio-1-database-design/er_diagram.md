@@ -7,6 +7,8 @@
 
 The following Crow's Foot ER Diagram represents the core domain entities, their attributes, and their relational cardinalities within the **ApexBank Digital** core banking platform:
 
+> **Image exports:** [`er_diagram.png`](er_diagram.png) (high-resolution, for documents) and [`er_diagram.svg`](er_diagram.svg) (vector). They are rendered from the Mermaid source below, which remains the single source of truth. To regenerate after editing the diagram, save the Mermaid block as `er.mmd` and run `npx @mermaid-js/mermaid-cli@11.4.2 -i er.mmd -o er_diagram.png -b white -s 3 -w 1600 -c elk.json`, where `elk.json` contains `{"layout":"elk"}`.
+
 ```mermaid
 erDiagram
     CUSTOMERS ||--o{ KYC_VERIFICATIONS : "undergoes"

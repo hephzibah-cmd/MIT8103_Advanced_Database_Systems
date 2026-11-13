@@ -20,6 +20,7 @@ The physical implementation targets **PostgreSQL 16**, using native `UUID`, `NUM
 | :--- | :--- |
 | [`case_study_description.md`](case_study_description.md) | Business context, user personas, stored entities, and business rules. |
 | [`er_diagram.md`](er_diagram.md) | Crow's foot ER diagram, data dictionary, and cardinality analysis. |
+| [`er_diagram.png`](er_diagram.png) / [`er_diagram.svg`](er_diagram.svg) | Image exports of the ER diagram rendered from the Mermaid source. |
 | [`relational_schema.md`](relational_schema.md) | Relational notation, candidate keys, constraints, and trigger definitions. |
 | [`normalization_analysis.md`](normalization_analysis.md) | Normalisation analysis from UNF through 1NF, 2NF, 3NF to BCNF. |
 | [`ddl_schema.sql`](ddl_schema.sql) | PostgreSQL DDL creating all 11 tables, constraints, indexes, and triggers. |
