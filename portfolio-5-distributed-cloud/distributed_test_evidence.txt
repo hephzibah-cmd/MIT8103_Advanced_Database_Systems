@@ -1,0 +1,98 @@
+======================================================================
+PORTFOLIO 5: DISTRIBUTED & CLOUD DATABASE — APEXBANK DIGITAL
+======================================================================
+Primary:   localhost:5435/apexbank
+Replica 1: localhost:5436/apexbank
+Replica 2: localhost:5437/apexbank
+
+----------------------------------------------------------------------
+1. NODE CONNECTION & ROLE IDENTIFICATION
+----------------------------------------------------------------------
+  [Primary (Leader)] CONNECTED — role=primary
+             PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on x86_64-pc-linu...
+  [Read Replica 1] CONNECTED — role=replica
+             PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on x86_64-pc-linu...
+  [Read Replica 2] CONNECTED — role=replica
+             PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on x86_64-pc-linu...
+
+----------------------------------------------------------------------
+2. REPLICATION STATUS (Primary)
+----------------------------------------------------------------------
+  wal_level=replica, synchronous_commit=on, synchronous_standby_names='' -> ASYNCHRONOUS replication
+  Replication slots:
+    replica_1_slot: type=physical, active=True, WAL retained for slot=0 bytes
+    replica_2_slot: type=physical, active=True, WAL retained for slot=0 bytes
+  Streaming replicas connected (pg_stat_replication): 2
+    replica_1: state=streaming, sync_state=async, send_lag=0 B, replay_lag=0 B, write_lag=None, flush_lag=None, replay_lag_time=None
+    replica_2: state=streaming, sync_state=async, send_lag=0 B, replay_lag=0 B, write_lag=None, flush_lag=None, replay_lag_time=None
+  [Replica 1] walreceiver=streaming, receive_lsn=0/4085240, replay_lsn=0/4085240, last_replayed_commit=2026-11-11 20:32:50.651562+00:00
+  [Replica 2] walreceiver=streaming, receive_lsn=0/4085240, replay_lsn=0/4085240, last_replayed_commit=2026-11-11 20:32:50.651562+00:00
+
+----------------------------------------------------------------------
+3. READ/WRITE SPLIT & REPLICATION PROPAGATION
+----------------------------------------------------------------------
+  Primary read before write: Amina balance = 14500.5000
+  Write to primary: journal JRN-P5-DC551EB73A3D committed (Amina -> Chidi 0.0100)
+  Primary read after write:  Amina balance = 14500.4900
+  Compensating write: journal JRN-P5-C39D5DCB8DEB committed (Chidi -> Amina 0.0100); Amina balance = 14500.5000 (net zero)
+  Primary WAL LSN after commits: 0/4085E00
+  [Replica 1] replayed past primary LSN 0/4085E00: True (observed propagation <= 1 ms)
+  [Replica 1] journal JRN-P5-DC551EB73A3D visible on replica: True
+  [Replica 1] READ: Amina balance = 14500.5000 (matches primary: True)
+  [Replica 1] Write correctly blocked on replica: cannot execute UPDATE in a read-only transaction
+  [Replica 2] replayed past primary LSN 0/4085E00: True (observed propagation <= 1 ms)
+  [Replica 2] journal JRN-P5-DC551EB73A3D visible on replica: True
+  [Replica 2] READ: Amina balance = 14500.5000 (matches primary: True)
+  [Replica 2] Write correctly blocked on replica: cannot execute UPDATE in a read-only transaction
+  Note: async replication => a replica read issued immediately after COMMIT
+  can be stale (no read-your-writes guarantee). The poll above waits for
+  replay; an application would route such reads to the primary instead.
+
+----------------------------------------------------------------------
+4. CONNECTION POOLING (pgBouncer, transaction mode)
+----------------------------------------------------------------------
+  pgBouncer pool 'apexbank' -> backend 172.19.0.2/32 role=primary
+  pgBouncer pool 'apexbank_replica_1' -> backend 172.19.0.3/32 role=replica
+  pgBouncer pool 'apexbank_replica_2' -> backend 172.19.0.4/32 role=replica
+
+----------------------------------------------------------------------
+5. ACCOUNT-BASED SHARDING DEMONSTRATION (routing simulation)
+----------------------------------------------------------------------
+  Shard routing: shard = UUID(account_id) as 128-bit integer % 3
+  Account a0000001-0000-4000-8000-000000000001 -> Shard 0
+  Account a0000002-0000-4000-8000-000000000002 -> Shard 2
+  Account a0000005-0000-4000-8000-000000000005 -> Shard 2
+  Account a0000008-0000-4000-8000-000000000008 -> Shard 2
+  Deterministic: the same account_id always routes to the same shard.
+  Amina -> Chidi transfer is CROSS-SHARD: needs 2PC (PREPARE TRANSACTION /
+  COMMIT PREPARED, max_prepared_transactions > 0) or a saga with compensating
+  journals; one shard's local transaction cannot make both legs atomic.
+
+----------------------------------------------------------------------
+6. CONSISTENCY CHECKS
+----------------------------------------------------------------------
+  [Primary] accounts=8, journals=6, all balanced: True
+  [Replica 1] accounts=8, journals=6, all balanced: True
+  [Replica 2] accounts=8, journals=6, all balanced: True
+  Ledger invariants are enforced once, on the single primary; standbys are
+  physical (block-level) copies, so they inherit the same invariants.
+
+----------------------------------------------------------------------
+7. CAP / PACELC ANALYSIS (as configured)
+----------------------------------------------------------------------
+  Topology: single primary + 2 ASYNC hot standbys, manual failover.
+  Partition (P), primary side: primary keeps accepting writes (available);
+     replicas cut off from it keep serving reads that grow stale.
+  Partition, replica side: reads stay available but are not linearizable;
+     writes are unavailable there (standbys are read-only).
+  Else (E, no partition): async replication trades replica consistency for
+     commit latency => PACELC PA/EL for replica reads.
+  Ledger correctness comes from routing ALL ledger writes and balance-before-
+     debit reads to the one primary (single-node ACID), not from replication.
+  Failover RPO > 0 while async: commits not yet streamed are lost on promotion.
+  Target for ledger (PC/EC, RPO=0): synchronous_standby_names =
+     'ANY 1 (replica_1, replica_2)' — writes block rather than risk loss.
+
+======================================================================
+PORTFOLIO 5 RUN COMPLETE
+======================================================================
