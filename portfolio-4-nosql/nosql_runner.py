@@ -456,6 +456,21 @@ def seed_kv(kv_coll):
     log(f"  [OK] Inserted {len(docs)} key-value documents")
 
 
+def create_indexes(db):
+    """Indexes for the access patterns (natural keys from P1 made unique)."""
+    db["customers"].create_index([("customer_id", ASCENDING)], unique=True, name="uq_customer_id")
+    db["customers"].create_index([("email", ASCENDING)], unique=True, name="uq_customer_email")
+    db["accounts"].create_index([("account_id", ASCENDING)], unique=True, name="uq_account_id")
+    db["accounts"].create_index([("account_number", ASCENDING)], unique=True, name="uq_account_number")
+    db["accounts"].create_index([("customer_id", ASCENDING)], name="idx_account_customer")
+    tx = db["transactions"]
+    tx.create_index([("transaction_id", ASCENDING)], unique=True, name="uq_transaction_id")
+    tx.create_index([("idempotency_key", ASCENDING)], unique=True, name="uq_idempotency_key")
+    tx.create_index([("source_account_id", ASCENDING), ("initiated_at", DESCENDING)], name="idx_source_initiated")
+    tx.create_index([("ledger_lines.account_id", ASCENDING)], name="idx_ledger_account")  # multikey
+    log("  [OK] Unique/secondary indexes created (incl. multikey ledger_lines.account_id)")
+
+
 def run_document_queries(db):
     log()
     log("-" * 60)
@@ -507,7 +522,15 @@ def run_document_queries(db):
     cursor = transactions.find({"status": "SETTLED"}, {"_id": 0, "transaction_reference": 1, "amount": 1})
     rows = list(cursor)
     log(f"  Found {len(rows)} SETTLED transaction(s)")
-    log("  [PASS] Index-supported status query executed.")
+    plan = transactions.find({"status": "SETTLED"}).explain()["queryPlanner"]["winningPlan"]
+    stages = []
+    node = plan
+    while node:
+        stages.append(node.get("stage"))
+        node = node.get("inputStage")
+    log(f"  winningPlan stages: {' -> '.join(stages)}")
+    status = "PASS" if "IXSCAN" in stages else "FAIL"
+    log(f"  [{status}] Status query uses idx_status (IXSCAN, not COLLSCAN).")
 
     # Q5: Aggregation — total debits/credits by account
     log()
@@ -623,11 +646,35 @@ def assert_invariants(db):
     status = "PASS" if actual == expected_txns else "FAIL"
     log(f"  [{status}] Transaction documents: {actual} (expected {expected_txns})")
 
-    # PCI DSS: no card document contains CVV/PIN/full PAN
-    cards_coll = db["accounts"]
-    full_pan_hits = cards_coll.count_documents({"cards.masked_pan": {"$regex": r"\d{11,}"}})
+    # Referential consistency: every account references an existing customer
+    customer_ids = set(customers.distinct("customer_id"))
+    orphans = [a for a in accounts.distinct("customer_id") if a not in customer_ids]
+    status = "PASS" if not orphans else "FAIL"
+    log(f"  [{status}] Every account.customer_id references a customer document: orphans={len(orphans)}")
+
+    # PCI DSS: masked_pan holds <= 10 digits in total (same rule as P1
+    # chk_masked_pan_not_full) and no CVV/PIN/full-PAN field exists.
+    pans = [c["masked_pan"] for a in accounts.find({}, {"cards.masked_pan": 1}) for c in a.get("cards", [])]
+    full_pan_hits = sum(1 for p in pans if sum(ch.isdigit() for ch in p) > 10)
     status = "PASS" if full_pan_hits == 0 else "FAIL"
-    log(f"  [{status}] Masked PAN field contains no full PAN (>10 digits): hits={full_pan_hits}")
+    log(f"  [{status}] Masked PAN has <=10 digits (P1 rule): cards={len(pans)} hits={full_pan_hits}")
+    forbidden = accounts.count_documents({"$or": [{f"cards.{f}": {"$exists": True}} for f in ("cvv", "cvc", "pin", "pan")]})
+    status = "PASS" if forbidden == 0 else "FAIL"
+    log(f"  [{status}] No cvv/cvc/pin/pan fields stored: hits={forbidden}")
+
+    # Money stored as exact Decimal128, not binary float
+    float_money = accounts.count_documents({"current_balance": {"$not": {"$type": "decimal"}}})
+    status = "PASS" if float_money == 0 else "FAIL"
+    log(f"  [{status}] All current_balance values are Decimal128: non-decimal={float_money}")
+
+    # Embedded double-entry lines balance (sum DEBIT == sum CREDIT) per transaction
+    unbalanced = 0
+    for t in transactions.find({}, {"ledger_lines": 1}):
+        dr = sum(l["amount"].to_decimal() for l in t["ledger_lines"] if l["entry_type"] == "DEBIT")
+        cr = sum(l["amount"].to_decimal() for l in t["ledger_lines"] if l["entry_type"] == "CREDIT")
+        unbalanced += dr != cr
+    status = "PASS" if unbalanced == 0 else "FAIL"
+    log(f"  [{status}] Embedded ledger_lines balance (debits == credits, app-enforced): unbalanced={unbalanced}")
 
     # Every transaction document has embedded ledger_lines
     missing_lines = transactions.count_documents({"ledger_lines": {"$exists": False}})
@@ -664,6 +711,7 @@ def main():
 
     # Unique index on idempotency key (KV)
     kv.create_index([("_key", ASCENDING)], unique=True, name="idx_kv_key_unique")
+    create_indexes(db)
 
     run_document_queries(db)
     run_kv_operations(db)

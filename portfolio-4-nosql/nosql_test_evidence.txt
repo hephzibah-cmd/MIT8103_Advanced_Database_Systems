@@ -6,10 +6,11 @@ Target: MongoDB at localhost:27017/apexbank?authSource=admin
 [OK] Collections dropped (re-runnable run)
 
 Seeding ApexBank document data ...
-  [OK] Inserted 6 customer documents
+  [OK] Inserted 8 customer documents
   [OK] Inserted 8 account documents (cards embedded)
   [OK] Inserted 2 transaction documents (ledger lines embedded)
   [OK] Inserted 5 key-value documents
+  [OK] Unique/secondary indexes created (incl. multikey ledger_lines.account_id)
 
 ------------------------------------------------------------
 DOCUMENT MODEL QUERIES (MongoDB)
@@ -20,24 +21,25 @@ Q1: Customer profile with embedded KYC (single document read, zero joins)
   [PASS] Customer + KYC retrieved in one document read (no JOIN).
 
 Q2: Account with embedded cards (aggregate read)
-  Account 1000100101 balance=14500.5 cards=1
+  Account 1000100101 balance=14500.5000 cards=1
   [PASS] Account + cards retrieved in one document read.
 
 Q3: Transactions sourced from an account, with embedded ledger lines
   Found 1 transaction(s)
-    TXN-20261025-001: 500.0 SETTLED, ledger_lines=3
+    TXN-20261025-001: 500.0000 SETTLED, ledger_lines=3
   [PASS] Transaction + ledger lines retrieved in one document read.
 
 Q4: Indexed query — SETTLED transactions (index on status)
   Found 2 SETTLED transaction(s)
-  [PASS] Index-supported status query executed.
+  winningPlan stages: FETCH -> IXSCAN
+  [PASS] Status query uses idx_status (IXSCAN, not COLLSCAN).
 
 Q5: Aggregation — sum of debit amounts per account (unwind embedded ledger_lines)
-  Account a0000001-0000-4000-8000-000000000001: total_debit=502.5
-  Account a0000002-0000-4000-8000-000000000002: total_debit=0
-  Account a0000005-0000-4000-8000-000000000005: total_debit=120.0
-  Account a0000006-0000-4000-8000-000000000006: total_debit=0
-  Account a0000008-0000-4000-8000-000000000008: total_debit=0
+  Account a0000001-0000-4000-8000-000000000001: total_debit=502.5000
+  Account a0000002-0000-4000-8000-000000000002: total_debit=0.0000
+  Account a0000005-0000-4000-8000-000000000005: total_debit=120.0000
+  Account a0000006-0000-4000-8000-000000000006: total_debit=0.0000
+  Account a0000008-0000-4000-8000-000000000008: total_debit=0.0000
   [PASS] Aggregation over embedded ledger_lines completed.
 
 ------------------------------------------------------------
@@ -45,11 +47,14 @@ KEY-VALUE MODEL OPERATIONS (MongoDB kv_store with TTL index)
 ------------------------------------------------------------
 
 KV1: Idempotency key lookup (get by key)
-  {'_key': 'idem:idem-key-889911-a', 'value': {'transaction_id': '30000001-0000-4000-8000-000000000001'}, 'kind': 'idempotency', 'expire_at': datetime.datetime(2026, 10, 26, 10, 14, 1)}
-  [PASS] Idempotency key found -> duplicate payment would be rejected.
+  {'_key': 'idem:idem-key-889911-a', 'value': {'transaction_id': '30000001-0000-4000-8000-000000000001'}, 'kind': 'idempotency'}
+  [PASS] Live idempotency key found -> duplicate payment would be rejected.
+
+KV1b: Retry with same idempotency key (insert-if-absent on unique _key)
+  [PASS] DuplicateKeyError raised -> retried payment rejected, original transaction_id returned.
 
 KV2: Session token lookup
-  {'_key': 'sess:sess_abc123', 'value': {'customer_id': 'c0000001-0000-4000-8000-000000000001', 'channel': 'MOBILE_APP'}, 'kind': 'session', 'expire_at': datetime.datetime(2026, 10, 25, 11, 14, 1)}
+  {'_key': 'sess:sess_abc123', 'value': {'customer_id': 'c0000001-0000-4000-8000-000000000001', 'channel': 'MOBILE_APP'}, 'kind': 'session'}
   [PASS] Session retrieved by token key.
 
 KV3: Atomic rate-limit increment ($inc)
@@ -67,8 +72,12 @@ KV5: Delete key-value entry
 ------------------------------------------------------------
 NOSQL MODEL SANITY CHECKS
 ------------------------------------------------------------
-  [PASS] Customer documents: 6 (expected 6)
+  [PASS] Customer documents: 8 (expected 8)
   [PASS] Account documents: 8 (expected 8)
   [PASS] Transaction documents: 2 (expected 2)
-  [PASS] Masked PAN field contains no full PAN (>10 digits): hits=0
+  [PASS] Every account.customer_id references a customer document: orphans=0
+  [PASS] Masked PAN has <=10 digits (P1 rule): cards=3 hits=0
+  [PASS] No cvv/cvc/pin/pan fields stored: hits=0
+  [PASS] All current_balance values are Decimal128: non-decimal=0
+  [PASS] Embedded ledger_lines balance (debits == credits, app-enforced): unbalanced=0
   [PASS] All transaction documents embed ledger_lines: missing=0
