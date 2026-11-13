@@ -60,20 +60,23 @@ $env:NOSQL_DATABASE_URL="mongodb://apexbank:apexbank_dev@localhost:27017/apexban
 What the runner does:
 
 1. Drops and recreates collections (re-runnable).
-2. Inserts 6 customer documents (KYC embedded), 8 account documents (cards embedded), 2 transaction documents (ledger lines embedded), and 5 key-value documents.
-3. Runs document queries: single-document customer+KYC read, account+cards aggregate read, transaction+ledger-lines read, indexed status query, aggregation over embedded `ledger_lines`.
-4. Runs key-value operations: idempotency key lookup, session get, atomic rate-limit `$inc`, card-lock toggle, key delete.
-5. Runs sanity checks: document counts, PCI DSS masked-PAN check, ledger-lines embedding check.
-6. Writes `nosql_test_evidence.txt`.
+2. Inserts 8 customer documents (KYC embedded), 8 account documents (3 cards embedded), 2 transaction documents (6 ledger lines embedded), and 5 key-value documents; money is stored as BSON `Decimal128`.
+3. Creates unique/secondary indexes (natural keys from P1, multikey `ledger_lines.account_id`, KV unique `_key` and TTL `expire_at`).
+4. Runs document queries: single-document customer+KYC read, account+cards aggregate read, transaction+ledger-lines read, indexed status query (with `explain()` showing `IXSCAN`), aggregation over embedded `ledger_lines`.
+5. Runs key-value operations: live idempotency key lookup, duplicate-key retry rejection (`DuplicateKeyError`), session get, atomic rate-limit `$inc`, card-lock toggle, key delete.
+6. Runs sanity checks: document counts, account-to-customer references, PCI DSS masked-PAN and forbidden-field checks, `Decimal128` type check, debits = credits per transaction, ledger-lines embedding check.
+7. Writes `nosql_test_evidence.txt` (the console output up to the end of the sanity checks).
+
+The container is a **standalone** MongoDB server (no replica set), so the runner does not use multi-document transactions; see `nosql_model.md` section 4 for the consistency discussion.
 
 ---
 
 ### Relationship to Portfolio 1
 
 - **Same case study:** ApexBank Digital, same entities (customers, accounts, cards, transactions).
-- **Same data:** Document values mirror the P1 seeded UUIDs, balances, and transactions so the two models are directly comparable.
+- **Same data:** Document values mirror the P1 seeded UUIDs, customers, KYC records, cards and transactions. Account balances are the P1 *post-posting* balances (opening balances in `seed_data.sql` after `trg_ledger_apply_balance` applies the seeded ledger entries), so the two models are directly comparable.
 - **PCI DSS preserved:** No CVV/CVC/PIN stored; only `masked_pan`, `card_token`, and `pan_hmac` — identical to P1.
-- **Relational vs document:** P1's 11 normalized tables become 4 document collections by embedding related data (KYC inside customer, cards inside account, ledger lines inside transaction), eliminating joins for the most common read patterns.
+- **Relational vs document:** P1's core tables become 3 document collections (`customers`, `accounts`, `transactions`) by embedding bounded related data (KYC inside customer, cards inside account, journal_id + ledger lines inside transaction; journal narrative not carried over), plus a `kv_store` collection for key-value data. Unbounded data (transactions per account) is referenced, not embedded. Lookup/reference tables (`currencies`, `account_types`), `merchants` (kept as `merchant_id` reference) and `audit_logs` are not modelled in the document store.
 
 ---
 
