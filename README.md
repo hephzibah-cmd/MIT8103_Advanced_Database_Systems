@@ -14,7 +14,7 @@ This repository contains the practical portfolio activities for MIT8103. All act
 | [`portfolio-2-query-optimisation/`](portfolio-2-query-optimisation/) | Complete | Analytical SQL queries, EXPLAIN (ANALYZE, BUFFERS) plans, baseline vs composite vs covering index experiments on a 50k-transaction dataset, cost-model and performance analysis. |
 | [`portfolio-3-transactions-concurrency/`](portfolio-3-transactions-concurrency/) | Complete | ACID transaction scripts (commit, rollback, savepoints), multithreaded concurrency experiments (lost update at READ COMMITTED vs REPEATABLE READ, atomic pessimistic guard, OCC, deadlock detection vs ordered locking, write skew at REPEATABLE READ vs SERIALIZABLE, idempotency), pre/post-run P1 invariant assertions, PostgreSQL 16 evidence. |
 | [`portfolio-4-nosql/`](portfolio-4-nosql/) | Complete | NoSQL model (MongoDB document store): customer profiles, accounts with embedded cards, transactions with embedded ledger lines, key-value idempotency/session/rate-limit store; column-family and graph designs documented. |
-| [`portfolio-5-distributed-cloud/`](portfolio-5-distributed-cloud/) | Pending | Replication, sharding, availability, consistency, and deployment. |
+| [`portfolio-5-distributed-cloud/`](portfolio-5-distributed-cloud/) | Complete | Multi-node PostgreSQL (primary + 2 read replicas), streaming replication, pgBouncer pooling, account-based sharding design, failover procedures, CAP theorem analysis, Docker Compose deployment. |
 
 ---
 
