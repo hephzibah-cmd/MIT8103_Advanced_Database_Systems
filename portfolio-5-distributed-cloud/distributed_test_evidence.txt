@@ -25,23 +25,23 @@ Replica 2: localhost:5437/apexbank
   Streaming replicas connected (pg_stat_replication): 2
     replica_1: state=streaming, sync_state=async, send_lag=0 B, replay_lag=0 B, write_lag=None, flush_lag=None, replay_lag_time=None
     replica_2: state=streaming, sync_state=async, send_lag=0 B, replay_lag=0 B, write_lag=None, flush_lag=None, replay_lag_time=None
-  [Replica 1] walreceiver=streaming, receive_lsn=0/4085240, replay_lsn=0/4085240, last_replayed_commit=2026-11-11 20:32:50.651562+00:00
-  [Replica 2] walreceiver=streaming, receive_lsn=0/4085240, replay_lsn=0/4085240, last_replayed_commit=2026-11-11 20:32:50.651562+00:00
+  [Replica 1] walreceiver=streaming, receive_lsn=0/4085FD0, replay_lsn=0/4085FD0, last_replayed_commit=None
+  [Replica 2] walreceiver=streaming, receive_lsn=0/4085FD0, replay_lsn=0/4085FD0, last_replayed_commit=None
 
 ----------------------------------------------------------------------
 3. READ/WRITE SPLIT & REPLICATION PROPAGATION
 ----------------------------------------------------------------------
   Primary read before write: Amina balance = 14500.5000
-  Write to primary: journal JRN-P5-DC551EB73A3D committed (Amina -> Chidi 0.0100)
+  Write to primary: journal JRN-P5-6C672CE27C9D committed (Amina -> Chidi 0.0100)
   Primary read after write:  Amina balance = 14500.4900
-  Compensating write: journal JRN-P5-C39D5DCB8DEB committed (Chidi -> Amina 0.0100); Amina balance = 14500.5000 (net zero)
-  Primary WAL LSN after commits: 0/4085E00
-  [Replica 1] replayed past primary LSN 0/4085E00: True (observed propagation <= 1 ms)
-  [Replica 1] journal JRN-P5-DC551EB73A3D visible on replica: True
+  Compensating write: journal JRN-P5-E31CFFDAE3CD committed (Chidi -> Amina 0.0100); Amina balance = 14500.5000 (net zero)
+  Primary WAL LSN after commits: 0/4088890
+  [Replica 1] replayed past primary LSN 0/4088890: True (observed propagation <= 4 ms)
+  [Replica 1] journal JRN-P5-6C672CE27C9D visible on replica: True
   [Replica 1] READ: Amina balance = 14500.5000 (matches primary: True)
   [Replica 1] Write correctly blocked on replica: cannot execute UPDATE in a read-only transaction
-  [Replica 2] replayed past primary LSN 0/4085E00: True (observed propagation <= 1 ms)
-  [Replica 2] journal JRN-P5-DC551EB73A3D visible on replica: True
+  [Replica 2] replayed past primary LSN 0/4088890: True (observed propagation <= 4 ms)
+  [Replica 2] journal JRN-P5-6C672CE27C9D visible on replica: True
   [Replica 2] READ: Amina balance = 14500.5000 (matches primary: True)
   [Replica 2] Write correctly blocked on replica: cannot execute UPDATE in a read-only transaction
   Note: async replication => a replica read issued immediately after COMMIT
@@ -71,9 +71,9 @@ Replica 2: localhost:5437/apexbank
 ----------------------------------------------------------------------
 6. CONSISTENCY CHECKS
 ----------------------------------------------------------------------
-  [Primary] accounts=8, journals=6, all balanced: True
-  [Replica 1] accounts=8, journals=6, all balanced: True
-  [Replica 2] accounts=8, journals=6, all balanced: True
+  [Primary] accounts=8, journals=8, all balanced: True
+  [Replica 1] accounts=8, journals=8, all balanced: True
+  [Replica 2] accounts=8, journals=8, all balanced: True
   Ledger invariants are enforced once, on the single primary; standbys are
   physical (block-level) copies, so they inherit the same invariants.
 

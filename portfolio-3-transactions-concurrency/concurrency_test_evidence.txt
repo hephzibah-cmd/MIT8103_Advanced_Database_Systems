@@ -41,8 +41,8 @@ A barrier guarantees both sessions READ before either WRITES.
 --- 1a: READ COMMITTED ---
   [Thread-1] attempt 1: read balance 14248.5000
   [Thread-2] attempt 1: read balance 14248.5000
-  [Thread-1] attempt 1: COMMIT, wrote balance 13448.5000
   [Thread-2] attempt 1: COMMIT, wrote balance 13448.5000
+  [Thread-1] attempt 1: COMMIT, wrote balance 13448.5000
 >> RESULT (READ COMMITTED): final balance = 13448.5000
    Correct (both withdrawals applied): 12648.5000
    [ANOMALY CONFIRMED] Lost update: one 800.0000 debit was overwritten;
@@ -50,12 +50,12 @@ A barrier guarantees both sessions READ before either WRITES.
    (touched accounts restored to their pre-experiment state)
 
 --- 1b: REPEATABLE READ ---
-  [Thread-1] attempt 1: read balance 14248.5000
   [Thread-2] attempt 1: read balance 14248.5000
-  [Thread-2] attempt 1: COMMIT, wrote balance 13448.5000
-  [Thread-1] attempt 1: SQLSTATE 40001 SerializationFailure ('could not serialize access due to concurrent update') -> ROLLBACK, retry
-  [Thread-1] attempt 2: read balance 13448.5000
-  [Thread-1] attempt 2: COMMIT, wrote balance 12648.5000
+  [Thread-1] attempt 1: read balance 14248.5000
+  [Thread-1] attempt 1: COMMIT, wrote balance 13448.5000
+  [Thread-2] attempt 1: SQLSTATE 40001 SerializationFailure ('could not serialize access due to concurrent update') -> ROLLBACK, retry
+  [Thread-2] attempt 2: read balance 13448.5000
+  [Thread-2] attempt 2: COMMIT, wrote balance 12648.5000
 >> RESULT (REPEATABLE READ): final balance = 12648.5000
    Correct (both withdrawals applied): 12648.5000
    [PASS] No lost update: the stale writer was aborted with SQLSTATE 40001
@@ -74,7 +74,7 @@ one fits, two do not. Each runs a single guarded UPDATE:
 Each session holds its row lock ~0.3s before COMMIT so the other must wait.
 
   [Thread-2] SUCCESS: rowcount=1, new balance=5248.5000 (UPDATE waited 1 ms)
-  [Thread-1] REJECTED: rowcount=0 - blocked 305 ms on the row lock, then re-evaluated the guard against the committed row
+  [Thread-1] REJECTED: rowcount=0 - blocked 304 ms on the row lock, then re-evaluated the guard against the committed row
 
 >> RESULT: Final balance = 5248.5000 (expected 5248.5000)
    [PASS] Exactly one debit applied; the second was rejected by the guard
@@ -91,8 +91,8 @@ Two sessions read (balance, version), meet at a barrier, then CAS:
   WHERE account_id = :id AND version = :read_version;
 rowcount=0 means the version moved: the loser re-reads and retries.
 
-  [Thread-1] attempt 1: read balance=14248.5000, version=1
   [Thread-2] attempt 1: read balance=14248.5000, version=1
+  [Thread-1] attempt 1: read balance=14248.5000, version=1
   [Thread-2] attempt 1: COMMIT balance=13448.5000, version 1 -> 2
   [Thread-1] attempt 1: CONFLICT (rowcount=0, version moved) -> retry
   [Thread-1] attempt 2: read balance=13448.5000, version=2
@@ -113,8 +113,8 @@ Each transfer locks both rows with SELECT ... FOR UPDATE, then debits/credits.
 A barrier makes both sessions hold their FIRST lock before requesting the second.
 
 --- 4a: UNORDERED (source first, then destination) ---
-  [Thread-2] attempt 1: locked a0000002
   [Thread-1] attempt 1: locked a0000001
+  [Thread-2] attempt 1: locked a0000002
   [Thread-2] attempt 1: locked a0000001
   [Thread-1] attempt 1: SQLSTATE 40P01 DeadlockDetected - chosen as victim, ROLLBACK, retry
   [Thread-2] attempt 1: COMMIT transfer 200.0000 a0000002 -> a0000001, locks released
@@ -150,8 +150,8 @@ then debits ONLY its own account (disjoint write sets, so no row conflict).
 One withdrawal is fine (151400.7500); both breach the rule (145400.7500).
 
 --- 5a: REPEATABLE READ ---
-  [Thread-1] attempt 1: read combined balance 157400.7500
   [Thread-2] attempt 1: read combined balance 157400.7500
+  [Thread-1] attempt 1: read combined balance 157400.7500
   [Thread-2] attempt 1: COMMIT, debited 6000.0000 from a0000006
   [Thread-1] attempt 1: COMMIT, debited 6000.0000 from a0000005
 >> RESULT (REPEATABLE READ): combined balance = 145400.7500 (rule >= 150000.0000)
@@ -160,12 +160,12 @@ One withdrawal is fine (151400.7500); both breach the rule (145400.7500).
    (touched accounts restored to their pre-experiment state)
 
 --- 5b: SERIALIZABLE ---
-  [Thread-2] attempt 1: read combined balance 157400.7500
   [Thread-1] attempt 1: read combined balance 157400.7500
-  [Thread-2] attempt 1: SQLSTATE 40001 SerializationFailure ('could not serialize access due to read/write dependencies among transactions') -> ROLLBACK, retry
-  [Thread-1] attempt 1: COMMIT, debited 6000.0000 from a0000005
-  [Thread-2] attempt 2: read combined balance 151400.7500
-  [Thread-2] attempt 2: rule would be breached -> withdrawal declined
+  [Thread-2] attempt 1: read combined balance 157400.7500
+  [Thread-1] attempt 1: SQLSTATE 40001 SerializationFailure ('could not serialize access due to read/write dependencies among transactions') -> ROLLBACK, retry
+  [Thread-2] attempt 1: COMMIT, debited 6000.0000 from a0000006
+  [Thread-1] attempt 2: read combined balance 151400.7500
+  [Thread-1] attempt 2: rule would be breached -> withdrawal declined
 >> RESULT (SERIALIZABLE): combined balance = 151400.7500 (rule >= 150000.0000)
    [PASS] Rule preserved: SSI detected the rw-dependency cycle, aborted one
    session with 40001, and its retry saw the other's debit and declined.
